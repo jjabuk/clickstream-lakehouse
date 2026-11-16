@@ -39,8 +39,10 @@ its metadata in its own Postgres database, separate from the `shop` database tha
 
 - One more service in compose (plus its Postgres database, a migration step and a bootstrapped
   warehouse), and a smoke test that proves PyIceberg and DuckDB both reach it.
-- Lakekeeper vends storage credentials from the warehouse configuration, so clients do not need
-  S3 keys of their own; this must be verified in the day 2 smoke test rather than assumed.
+- Lakekeeper can hand clients storage access in two ways: vended credentials (needs STS) or
+  remote signing. The object store in use (ADR 0010) has no STS, so the warehouse is configured
+  with remote signing for PyIceberg, and DuckDB, which does not implement remote signing, gets
+  its own S3 credentials (`client-managed`). The day 2 smoke test must prove both paths.
 - Because the contract is the REST spec, moving to Polaris or Nessie later is a configuration
   change, not a rewrite.
 - Object storage backing the warehouse is a separate decision (see the compose setup).
