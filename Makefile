@@ -1,6 +1,9 @@
 .DEFAULT_GOAL := help
 
-.PHONY: help setup hooks lint format format-check test check clean
+.PHONY: help setup hooks lint format format-check test check clean \
+	up down ps logs storage-init reset psql
+
+COMPOSE := docker compose -f infra/docker-compose.yml --env-file .env
 
 help: ## Show available targets
 	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z_-]+:.*## / {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -29,3 +32,27 @@ check: lint format-check test ## Run everything CI runs (lint, format check, tes
 clean: ## Remove caches
 	rm -rf .ruff_cache .pytest_cache
 	find . -name __pycache__ -type d -not -path "./.venv/*" -prune -exec rm -rf {} +
+
+.env:
+	cp .env.example .env
+
+up: .env ## Start the local stack and wait until it is healthy
+	$(COMPOSE) up -d --wait
+
+down: ## Stop the stack (data volumes are kept)
+	$(COMPOSE) down
+
+ps: ## Show service status
+	$(COMPOSE) ps
+
+logs: ## Tail logs (SERVICE=name for one service)
+	$(COMPOSE) logs -f --tail=100 $(SERVICE)
+
+storage-init: .env ## Initialise Garage: layout, bucket, access key (idempotent)
+	./infra/garage/init.sh
+
+psql: .env ## Open psql in the shop database
+	$(COMPOSE) exec postgres sh -c 'psql -U "$$POSTGRES_USER" -d shop'
+
+reset: .env ## Stop the stack and DELETE all data volumes
+	$(COMPOSE) down -v
