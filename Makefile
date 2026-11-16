@@ -1,7 +1,10 @@
 .DEFAULT_GOAL := help
 
 .PHONY: help setup hooks lint format format-check test check clean \
-	up down ps logs storage-init reset psql-shop psql-platform
+	up down ps logs storage-init reset psql-shop psql-platform catalog-init hosts-check bootstrap
+
+-include .env
+export
 
 COMPOSE := docker compose -f infra/docker-compose.yml --env-file .env
 
@@ -50,6 +53,16 @@ logs: ## Tail logs (SERVICE=name for one service)
 
 storage-init: .env ## Initialise Garage: layout, bucket, access key (idempotent)
 	./infra/garage/init.sh
+
+hosts-check: ## Verify the S3 hostname resolves on the host (needed once, see ADR 0012)
+	@getent hosts garage >/dev/null 2>&1 || dscacheutil -q host -a name garage | grep -q 127.0.0.1 || \
+		{ echo 'Host "garage" does not resolve. Run once: echo "127.0.0.1 garage" | sudo tee -a /etc/hosts'; exit 1; }
+	@echo 'OK: "garage" resolves to 127.0.0.1'
+
+bootstrap: hosts-check up storage-init catalog-init ## Bring up the whole stack from scratch (idempotent)
+
+catalog-init: .env ## Bootstrap Lakekeeper and create the warehouse (idempotent)
+	uv run python infra/lakekeeper/init_catalog.py
 
 psql-shop: .env ## Open psql in the shop database (orders, CDC source)
 	$(COMPOSE) exec postgres-shop sh -c 'psql -U "$$POSTGRES_USER" -d shop'

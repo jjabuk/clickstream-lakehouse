@@ -67,6 +67,42 @@ services:
       timeout: 5s
       retries: 12
 
+  # Iceberg REST catalog (ADR 0002). Its state lives in the `lakekeeper` database on
+  # postgres-platform; `lakekeeper-migrate` brings the schema up before the server starts.
+  lakekeeper-migrate:
+    image: quay.io/lakekeeper/catalog:v0.15.1
+    restart: "no"
+    command: ["migrate"]
+    environment: &lakekeeper-env
+      LAKEKEEPER__PG_DATABASE_URL_READ: postgresql://${PLATFORM_POSTGRES_USER}:${PLATFORM_POSTGRES_PASSWORD}@postgres-platform:5432/lakekeeper
+      LAKEKEEPER__PG_DATABASE_URL_WRITE: postgresql://${PLATFORM_POSTGRES_USER}:${PLATFORM_POSTGRES_PASSWORD}@postgres-platform:5432/lakekeeper
+      LAKEKEEPER__PG_ENCRYPTION_KEY: ${LAKEKEEPER_ENCRYPTION_KEY}
+    depends_on:
+      postgres-platform:
+        condition: service_healthy
+
+  lakekeeper:
+    image: quay.io/lakekeeper/catalog:v0.15.1
+    restart: unless-stopped
+    command: ["serve"]
+    environment:
+      <<: *lakekeeper-env
+      # Links that Lakekeeper hands to clients (e.g. the remote-signing URL) must work from the host.
+      LAKEKEEPER__BASE_URI: http://localhost:8181
+    depends_on:
+      lakekeeper-migrate:
+        condition: service_completed_successfully
+      garage:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8181:8181"
+    healthcheck:
+      test: ["CMD", "/home/nonroot/lakekeeper", "healthcheck"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+
 volumes:
   garage-meta:
   garage-data:
