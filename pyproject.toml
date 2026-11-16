@@ -1,0 +1,28 @@
+[project]
+name = "clickstream-lakehouse"
+version = "0.1.0"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "duckdb==2.0.0",
+    "psycopg[binary]==3.3.9",
+    "pyiceberg[pyarrow,s3fs]==0.12.0",
+]
+
+[dependency-groups]
+dev = [
+    "pre-commit==4.7.0",
+    "pytest==9.2.0",
+    "ruff==0.17.5",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["generator", "ingest", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

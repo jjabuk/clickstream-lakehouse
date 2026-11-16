@@ -1,0 +1,25 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+.ruff_cache/
+.pytest_cache/
+
+# dbt
+dbt/target/
+dbt/dbt_packages/
+dbt/logs/
+
+# Evidence
+evidence/node_modules/
+evidence/.evidence/
+evidence/build/
+
+# local data and secrets
+data/
+.env
+*.duckdb
+*.duckdb.wal
+
+# OS
+.DS_Store
