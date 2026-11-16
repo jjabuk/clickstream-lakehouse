@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := help
 
 .PHONY: help setup hooks lint format format-check test check clean \
-	up down ps logs storage-init reset psql-shop psql-platform catalog-init hosts-check bootstrap
+	up down ps logs storage-init reset psql-shop psql-platform catalog-init hosts-check bootstrap test-integration
 
 -include .env
 export
@@ -27,8 +27,11 @@ format: ## Format with ruff
 format-check: ## Check formatting without changing files
 	uv run ruff format --check .
 
-test: ## Run pytest
-	uv run pytest
+test: ## Run unit tests (no stack needed)
+	uv run pytest -m "not integration"
+
+test-integration: ## Run smoke tests against the running stack
+	uv run pytest -m integration
 
 check: lint format-check test ## Run everything CI runs (lint, format check, tests)
 
