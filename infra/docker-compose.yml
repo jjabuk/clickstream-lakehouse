@@ -20,12 +20,13 @@ services:
       timeout: 5s
       retries: 12
 
-  postgres:
+  # Source system: the shop's order database. Debezium reads it from week 5, so it is the only
+  # instance with logical decoding (see ADR 0011).
+  postgres-shop:
     image: postgres:18.7
     restart: unless-stopped
     command:
       - postgres
-      # Debezium (week 5) needs logical decoding; enabling it now avoids rebuilding the service.
       - -c
       - wal_level=logical
       - -c
@@ -33,17 +34,35 @@ services:
       - -c
       - max_replication_slots=10
     environment:
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_USER: ${SHOP_POSTGRES_USER}
+      POSTGRES_PASSWORD: ${SHOP_POSTGRES_PASSWORD}
       POSTGRES_DB: shop
     volumes:
       # Postgres 18 images keep PGDATA in a versioned subdirectory of /var/lib/postgresql.
-      - postgres-data:/var/lib/postgresql
-      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+      - postgres-shop-data:/var/lib/postgresql
     ports:
       - "127.0.0.1:5432:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d shop"]
+      test: ["CMD-SHELL", "pg_isready -U ${SHOP_POSTGRES_USER} -d shop"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  # Platform metadata: Lakekeeper's catalog now, Airflow's metadata database in week 1, day 6.
+  # Default configuration, no replication.
+  postgres-platform:
+    image: postgres:18.7
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${PLATFORM_POSTGRES_USER}
+      POSTGRES_PASSWORD: ${PLATFORM_POSTGRES_PASSWORD}
+      POSTGRES_DB: lakekeeper
+    volumes:
+      - postgres-platform-data:/var/lib/postgresql
+    ports:
+      - "127.0.0.1:5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PLATFORM_POSTGRES_USER} -d lakekeeper"]
       interval: 5s
       timeout: 5s
       retries: 12
@@ -51,4 +70,5 @@ services:
 volumes:
   garage-meta:
   garage-data:
-  postgres-data:
+  postgres-shop-data:
+  postgres-platform-data:

@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := help
 
 .PHONY: help setup hooks lint format format-check test check clean \
-	up down ps logs storage-init reset psql
+	up down ps logs storage-init reset psql-shop psql-platform
 
 COMPOSE := docker compose -f infra/docker-compose.yml --env-file .env
 
@@ -51,8 +51,11 @@ logs: ## Tail logs (SERVICE=name for one service)
 storage-init: .env ## Initialise Garage: layout, bucket, access key (idempotent)
 	./infra/garage/init.sh
 
-psql: .env ## Open psql in the shop database
-	$(COMPOSE) exec postgres sh -c 'psql -U "$$POSTGRES_USER" -d shop'
+psql-shop: .env ## Open psql in the shop database (orders, CDC source)
+	$(COMPOSE) exec postgres-shop sh -c 'psql -U "$$POSTGRES_USER" -d shop'
+
+psql-platform: .env ## Open psql in the platform instance (Lakekeeper catalog)
+	$(COMPOSE) exec postgres-platform sh -c 'psql -U "$$POSTGRES_USER" -d lakekeeper'
 
 reset: .env ## Stop the stack and DELETE all data volumes
 	$(COMPOSE) down -v
