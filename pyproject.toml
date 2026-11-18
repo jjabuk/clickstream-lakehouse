@@ -6,7 +6,8 @@ dependencies = [
     "duckdb==2.0.0",
     "numpy==2.5.5",
     "psycopg[binary]==3.3.9",
-    "pyiceberg[pyarrow,s3fs]==0.12.0",
+    "pyarrow==26.0.1",
+    "pyiceberg[pyarrow,s3fs,pyiceberg-core]==0.12.0",
 ]
 
 [dependency-groups]

@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := help
 
 .PHONY: help setup hooks lint format format-check test check clean \
-	up down ps logs storage-init reset psql-shop psql-platform catalog-init hosts-check bootstrap test-integration
+	up down ps logs storage-init reset psql-shop psql-platform catalog-init hosts-check bootstrap test-integration day
 
 -include .env
 export
@@ -72,6 +72,13 @@ psql-shop: .env ## Open psql in the shop database (orders, CDC source)
 
 psql-platform: .env ## Open psql in the platform instance (Lakekeeper catalog)
 	$(COMPOSE) exec postgres-platform sh -c 'psql -U "$$POSTGRES_USER" -d lakekeeper'
+
+SEED ?= 42
+
+day: .env ## Generate one day and load it: make day DATE=2026-01-10 [SEED=42]
+	@test -n "$(DATE)" || { echo "usage: make day DATE=YYYY-MM-DD [SEED=42]"; exit 1; }
+	uv run python -m generator --date $(DATE) --seed $(SEED)
+	uv run python -m ingest --date $(DATE)
 
 reset: .env ## Stop the stack and DELETE all data volumes
 	$(COMPOSE) down -v

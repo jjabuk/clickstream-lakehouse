@@ -48,7 +48,7 @@ services:
       timeout: 5s
       retries: 12
 
-  # Platform metadata: Lakekeeper's catalog now, Airflow's metadata database in week 1, day 6.
+  # Platform metadata: Lakekeeper's catalog now, Airflow's metadata database from week 3.
   # Default configuration, no replication.
   postgres-platform:
     image: postgres:18.7
