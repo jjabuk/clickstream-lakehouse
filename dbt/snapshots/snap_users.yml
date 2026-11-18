@@ -1,0 +1,14 @@
+version: 2
+
+snapshots:
+  - name: snap_users
+    description: >
+      Type 2 history of registered users. Grain: one row per user and version. A new version
+      starts when `updated_at` moves, which the generator does when country or plan changes.
+      Postgres keeps only the current row, so the history starts when this snapshot first ran
+      (ADR 0014): run `dbt build` after every simulated day to keep it complete.
+    relation: ref('stg_shop__users')
+    config:
+      unique_key: user_id
+      strategy: timestamp
+      updated_at: updated_at
