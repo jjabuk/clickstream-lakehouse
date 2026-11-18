@@ -1,0 +1,24 @@
+version: 2
+
+unit_tests:
+  - name: stg_clickstream__events__dedup_time_and_bots
+    description: >
+      The first delivery of an event wins, an event cannot occur after it arrived, lateness is
+      measured against the occurrence time, and a missing cookie or a crawler user agent marks a bot.
+    model: stg_clickstream__events
+    given:
+      - input: source('clickstream', 'events')
+        rows:
+          - {event_id: dup, event_ts: '2026-03-01 10:00:00+00', server_ts: '2026-03-01 10:00:01+00', cookie_id: c1, user_agent: Mozilla/5.0, _ingested_at: '2026-03-01 10:05:00+00'}
+          - {event_id: dup, event_ts: '2026-03-01 10:00:00+00', server_ts: '2026-03-01 12:00:00+00', cookie_id: c1, user_agent: Mozilla/5.0, _ingested_at: '2026-03-01 12:05:00+00'}
+          - {event_id: ahead, event_ts: '2026-03-01 10:00:10+00', server_ts: '2026-03-01 10:00:05+00', cookie_id: c1, user_agent: Mozilla/5.0, _ingested_at: '2026-03-01 10:05:00+00'}
+          - {event_id: late, event_ts: '2026-03-01 08:00:00+00', server_ts: '2026-03-01 10:00:00+00', cookie_id: c1, user_agent: Mozilla/5.0, _ingested_at: '2026-03-01 10:05:00+00'}
+          - {event_id: no_cookie, event_ts: '2026-03-01 10:00:00+00', server_ts: '2026-03-01 10:00:01+00', cookie_id: null, user_agent: Mozilla/5.0, _ingested_at: '2026-03-01 10:05:00+00'}
+          - {event_id: crawler, event_ts: '2026-03-01 10:00:00+00', server_ts: '2026-03-01 10:00:01+00', cookie_id: c2, user_agent: curl/8.7.1, _ingested_at: '2026-03-01 10:05:00+00'}
+    expect:
+      rows:
+        - {event_id: dup, received_at: '2026-03-01 10:00:01+00', occurred_at: '2026-03-01 10:00:00+00', arrival_lag_seconds: 1, is_bot: false}
+        - {event_id: ahead, received_at: '2026-03-01 10:00:05+00', occurred_at: '2026-03-01 10:00:05+00', arrival_lag_seconds: 0, is_bot: false}
+        - {event_id: late, received_at: '2026-03-01 10:00:00+00', occurred_at: '2026-03-01 08:00:00+00', arrival_lag_seconds: 7200, is_bot: false}
+        - {event_id: no_cookie, received_at: '2026-03-01 10:00:01+00', occurred_at: '2026-03-01 10:00:00+00', arrival_lag_seconds: 1, is_bot: true}
+        - {event_id: crawler, received_at: '2026-03-01 10:00:01+00', occurred_at: '2026-03-01 10:00:00+00', arrival_lag_seconds: 1, is_bot: true}

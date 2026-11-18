@@ -1,0 +1,296 @@
+version: 2
+
+models:
+  - name: fct_page_views
+    description: >
+      Grain: one page view of a human visitor (`event_id`). Bots and add_to_cart events are
+      excluded. Incremental by merge on `event_id`; rows inside the lookback window are
+      recomputed on every run because late events can change session membership (ADR 0004).
+    config:
+      contract:
+        enforced: true
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [session_id, page_number_in_session]
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "received_at >= occurred_at"
+    columns:
+      - name: event_id
+        data_type: varchar
+        constraints: [{type: not_null}]
+        data_tests: [unique, not_null]
+      - name: session_id
+        data_type: varchar
+        description: Hash of the visitor's cookie and the session's first page view time.
+        constraints: [{type: not_null}]
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('fct_sessions')
+                field: session_id
+      - name: session_started_at
+        data_type: timestamp with time zone
+        data_tests: [not_null]
+      - name: page_number_in_session
+        data_type: bigint
+        description: Position of the view within its session, starting at 1.
+        data_tests:
+          - not_null
+          - dbt_expectations.expect_column_values_to_be_between:
+              arguments:
+                min_value: 1
+      - name: cookie_id
+        data_type: varchar
+        description: Browser cookie; never null here, because bots are excluded.
+        data_tests: [not_null]
+      - name: user_id
+        data_type: bigint
+        description: Registered user while logged in, otherwise null.
+      - name: user_key
+        data_type: varchar
+        description: The user's dimension row valid at `occurred_at`, or the unknown member.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_user')
+                field: user_key
+      - name: occurred_at
+        data_type: timestamp with time zone
+        data_tests: [not_null]
+      - name: date_key
+        data_type: integer
+        description: UTC date of `occurred_at` as yyyymmdd.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_date')
+                field: date_key
+      - name: received_at
+        data_type: timestamp with time zone
+        data_tests: [not_null]
+      - name: page_type
+        data_type: varchar
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [home, category, product, cart, checkout]
+      - name: page_key
+        data_type: varchar
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_page')
+                field: page_key
+      - name: page_url
+        data_type: varchar
+      - name: product_id
+        data_type: bigint
+      - name: device
+        data_type: varchar
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [mobile, desktop]
+      - name: country
+        data_type: varchar
+      - name: utm_campaign
+        data_type: varchar
+        description: Campaign of the session; exists only from the day the tracking was extended.
+
+  - name: fct_sessions
+    description: >
+      Grain: one session (`session_id`), a run of one visitor's page views with no gap longer
+      than `session_timeout_minutes`. A plain table rebuilt from fct_page_views on every run.
+    config:
+      contract:
+        enforced: true
+    data_tests:
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "session_ended_at >= session_started_at"
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "is_bounce = (page_views = 1)"
+      # Every page view belongs to exactly one session, so the two facts must agree on volume.
+      - dbt_expectations.expect_table_aggregation_to_equal_other_table:
+          arguments:
+            expression: sum(page_views)
+            compare_model: ref('fct_page_views')
+            compare_expression: count(*)
+    columns:
+      - name: session_id
+        data_type: varchar
+        constraints: [{type: not_null}]
+        data_tests: [unique, not_null]
+      - name: cookie_id
+        data_type: varchar
+        data_tests: [not_null]
+      - name: user_id
+        data_type: bigint
+      - name: user_key
+        data_type: varchar
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_user')
+                field: user_key
+      - name: session_started_at
+        data_type: timestamp with time zone
+        data_tests: [not_null]
+      - name: session_ended_at
+        data_type: timestamp with time zone
+        data_tests: [not_null]
+      - name: date_key
+        data_type: integer
+        description: UTC date of the session start as yyyymmdd.
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('dim_date')
+                field: date_key
+      - name: duration_seconds
+        data_type: double
+        description: >
+          Seconds between first and last view. Capped by the session context window the
+          incremental fact assumes, so a longer session means that assumption is broken.
+        data_tests:
+          - dbt_expectations.expect_column_values_to_be_between:
+              arguments:
+                min_value: 0
+                max_value: "{{ var('session_context_hours') * 3600 }}"
+      - name: page_views
+        data_type: bigint
+        data_tests:
+          - dbt_expectations.expect_column_values_to_be_between:
+              arguments:
+                min_value: 1
+      - name: is_bounce
+        data_type: boolean
+        description: True for a session with a single page view.
+      - name: entry_page_type
+        data_type: varchar
+      - name: exit_page_type
+        data_type: varchar
+      - name: product_views
+        data_type: bigint
+      - name: reached_cart
+        data_type: boolean
+      - name: reached_checkout
+        data_type: boolean
+      - name: device
+        data_type: varchar
+      - name: country
+        data_type: varchar
+      - name: utm_campaign
+        data_type: varchar
+      - name: last_received_at
+        data_type: timestamp with time zone
+
+  - name: dim_user
+    description: >
+      Grain: one version of a registered user (`user_key`), valid from `effective_from` to
+      `effective_to`, plus one "unknown" member for anonymous visits. Type 2 history of country
+      and plan from the snapshot of the shop's users.
+    config:
+      contract:
+        enforced: true
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [user_id, effective_from]
+      # Exactly one current version per user (the unknown member has no user_id).
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [user_id]
+          config:
+            where: "is_current and user_id is not null"
+    columns:
+      - name: user_key
+        data_type: varchar
+        constraints: [{type: not_null}]
+        data_tests: [unique, not_null]
+      - name: user_id
+        data_type: bigint
+      - name: country
+        data_type: varchar
+        data_tests: [not_null]
+      - name: plan
+        data_type: varchar
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [free, premium, unknown]
+      - name: effective_from
+        data_type: timestamp with time zone
+        data_tests: [not_null]
+      - name: effective_to
+        data_type: timestamp with time zone
+        data_tests: [not_null]
+      - name: is_current
+        data_type: boolean
+
+  - name: dim_page
+    description: >
+      Grain: one page URL of the shop (`page_url`): the home, cart and checkout pages, every
+      category page and every product page.
+    config:
+      contract:
+        enforced: true
+    columns:
+      - name: page_key
+        data_type: varchar
+        constraints: [{type: not_null}]
+        data_tests: [unique, not_null]
+      - name: page_url
+        data_type: varchar
+        data_tests: [unique, not_null]
+      - name: page_type
+        data_type: varchar
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [home, category, product, cart, checkout]
+      - name: category_id
+        data_type: integer
+      - name: category_slug
+        data_type: varchar
+      - name: product_id
+        data_type: integer
+
+  - name: dim_date
+    description: "Grain: one calendar day in UTC (`date_key`), from the start of the simulated world."
+    config:
+      contract:
+        enforced: true
+    columns:
+      - name: date_key
+        data_type: integer
+        description: The day as yyyymmdd.
+        constraints: [{type: not_null}]
+        data_tests: [unique, not_null]
+      - name: date_day
+        data_type: date
+        data_tests: [unique, not_null]
+      - name: year
+        data_type: bigint
+      - name: month
+        data_type: bigint
+      - name: day_of_month
+        data_type: bigint
+      - name: iso_year
+        data_type: bigint
+      - name: iso_week
+        data_type: bigint
+      - name: day_of_week
+        data_type: bigint
+        description: ISO day of week, Monday = 1.
+      - name: is_weekend
+        data_type: boolean
+      - name: week_start_date
+        data_type: date

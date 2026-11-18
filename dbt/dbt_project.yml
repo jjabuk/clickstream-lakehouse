@@ -34,7 +34,18 @@ models:
 
   dbt_project_evaluator:
     +enabled: "{{ var('enable_project_evaluator', false) | as_bool }}"
+    # Keep the ~50 audit tables out of the schema that holds the marts.
+    +schema: evaluator
 
 seeds:
   dbt_project_evaluator:
     +enabled: "{{ var('enable_project_evaluator', false) | as_bool }}"
+    +schema: evaluator
+    # Replaced by this project's seed of the same name, which holds the documented exceptions.
+    dbt_project_evaluator_exceptions:
+      +enabled: false
+  clickstream:
+    # Documented exceptions for the evaluator; only used when it runs.
+    dbt_project_evaluator_exceptions:
+      +enabled: "{{ var('enable_project_evaluator', false) | as_bool }}"
+      +schema: evaluator

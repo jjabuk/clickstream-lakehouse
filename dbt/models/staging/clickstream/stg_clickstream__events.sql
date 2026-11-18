@@ -2,7 +2,7 @@
 -- delivery of each event_id.
 with source as (
 
-    select * from {{ source('bronze', 'clickstream_events') }}
+    select * from {{ source('clickstream', 'events') }}
 
 ),
 

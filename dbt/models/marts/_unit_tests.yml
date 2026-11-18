@@ -1,0 +1,157 @@
+version: 2
+
+unit_tests:
+  # ---- sessionization ------------------------------------------------------------------------
+  - name: fct_page_views__session_gap_is_30_minutes
+    description: A 29-minute gap keeps the session, a 31-minute gap starts a new one.
+    model: fct_page_views
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('stg_clickstream__events')
+        rows:
+          - {event_id: e1, event_type: page_view, cookie_id: c1, is_bot: false, page_type: home, page_url: /, occurred_at: '2026-03-01 10:00:00+00', received_at: '2026-03-01 10:00:01+00'}
+          - {event_id: e2, event_type: page_view, cookie_id: c1, is_bot: false, page_type: product, page_url: /p/1, occurred_at: '2026-03-01 10:29:00+00', received_at: '2026-03-01 10:29:01+00'}
+          - {event_id: e3, event_type: page_view, cookie_id: c1, is_bot: false, page_type: cart, page_url: /cart, occurred_at: '2026-03-01 11:00:00+00', received_at: '2026-03-01 11:00:01+00'}
+          - {event_id: e4, event_type: page_view, cookie_id: c2, is_bot: false, page_type: home, page_url: /, occurred_at: '2026-03-01 10:05:00+00', received_at: '2026-03-01 10:05:01+00'}
+      - input: ref('dim_user')
+        rows:
+          - {user_key: unknown, user_id: null, effective_from: '1900-01-01 00:00:00+00', effective_to: '9999-12-31 00:00:00+00'}
+    expect:
+      rows:
+        - {event_id: e1, session_started_at: '2026-03-01 10:00:00+00', page_number_in_session: 1}
+        - {event_id: e2, session_started_at: '2026-03-01 10:00:00+00', page_number_in_session: 2}
+        - {event_id: e3, session_started_at: '2026-03-01 11:00:00+00', page_number_in_session: 1}
+        - {event_id: e4, session_started_at: '2026-03-01 10:05:00+00', page_number_in_session: 1}
+
+  - name: fct_page_views__only_human_page_views
+    description: Bots and add_to_cart events never reach the fact.
+    model: fct_page_views
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('stg_clickstream__events')
+        rows:
+          - {event_id: human_view, event_type: page_view, cookie_id: c1, is_bot: false, page_type: home, page_url: /, occurred_at: '2026-03-01 10:00:00+00', received_at: '2026-03-01 10:00:01+00'}
+          - {event_id: cart_add, event_type: add_to_cart, cookie_id: c1, is_bot: false, page_type: product, page_url: /p/1, occurred_at: '2026-03-01 10:00:05+00', received_at: '2026-03-01 10:00:06+00'}
+          - {event_id: bot_view, event_type: page_view, cookie_id: null, is_bot: true, page_type: product, page_url: /p/1, occurred_at: '2026-03-01 10:00:00+00', received_at: '2026-03-01 10:00:01+00'}
+      - input: ref('dim_user')
+        rows:
+          - {user_key: unknown, user_id: null, effective_from: '1900-01-01 00:00:00+00', effective_to: '9999-12-31 00:00:00+00'}
+    expect:
+      rows:
+        - {event_id: human_view}
+
+  # ---- slowly changing user attributes ---------------------------------------------------------
+  - name: fct_page_views__user_key_is_the_version_valid_at_the_event
+    description: >
+      The same user gets different dimension rows before and after an attribute change, and an
+      anonymous view gets the unknown member.
+    model: fct_page_views
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('stg_clickstream__events')
+        rows:
+          - {event_id: before, event_type: page_view, cookie_id: c1, user_id: 1, is_bot: false, page_type: home, page_url: /, occurred_at: '2026-03-01 23:50:00+00', received_at: '2026-03-01 23:50:01+00'}
+          - {event_id: after, event_type: page_view, cookie_id: c1, user_id: 1, is_bot: false, page_type: home, page_url: /, occurred_at: '2026-03-02 00:10:00+00', received_at: '2026-03-02 00:10:01+00'}
+          - {event_id: anonymous, event_type: page_view, cookie_id: c2, user_id: null, is_bot: false, page_type: home, page_url: /, occurred_at: '2026-03-02 00:10:00+00', received_at: '2026-03-02 00:10:01+00'}
+      - input: ref('dim_user')
+        rows:
+          - {user_key: k_old, user_id: 1, effective_from: '1900-01-01 00:00:00+00', effective_to: '2026-03-02 00:00:00+00'}
+          - {user_key: k_new, user_id: 1, effective_from: '2026-03-02 00:00:00+00', effective_to: '9999-12-31 00:00:00+00'}
+    expect:
+      rows:
+        - {event_id: before, user_key: k_old}
+        - {event_id: after, user_key: k_new}
+        - {event_id: anonymous, user_key: ab623e1f8d51d01aeef17b147ac104c1}
+
+  # ---- late events (incremental run) -----------------------------------------------------------
+  - name: fct_page_views__late_event_bridges_two_sessions
+    description: >
+      A and B are 40 minutes apart, so they were two sessions. A late event at 10:20 arrives days
+      later and joins them: B is reprocessed and moves into A's session.
+    model: fct_page_views
+    overrides:
+      macros:
+        is_incremental: true
+    given:
+      - input: ref('stg_clickstream__events')
+        rows:
+          - {event_id: a, event_type: page_view, cookie_id: c1, is_bot: false, page_type: home, page_url: /, occurred_at: '2026-03-01 10:00:00+00', received_at: '2026-03-01 10:00:01+00'}
+          - {event_id: b, event_type: page_view, cookie_id: c1, is_bot: false, page_type: product, page_url: /p/1, occurred_at: '2026-03-01 10:40:00+00', received_at: '2026-03-01 10:40:01+00'}
+          - {event_id: late, event_type: page_view, cookie_id: c1, is_bot: false, page_type: category, page_url: /c/1, occurred_at: '2026-03-01 10:20:00+00', received_at: '2026-03-02 09:00:00+00'}
+      - input: ref('dim_user')
+        rows:
+          - {user_key: unknown, user_id: null, effective_from: '1900-01-01 00:00:00+00', effective_to: '9999-12-31 00:00:00+00'}
+      - input: this
+        rows:
+          - {event_id: a, cookie_id: c1, occurred_at: '2026-03-01 10:00:00+00', received_at: '2026-03-01 10:00:01+00'}
+          - {event_id: b, cookie_id: c1, occurred_at: '2026-03-01 10:40:00+00', received_at: '2026-03-01 10:40:01+00'}
+    expect:
+      rows:
+        - {event_id: a, session_started_at: '2026-03-01 10:00:00+00', page_number_in_session: 1}
+        - {event_id: late, session_started_at: '2026-03-01 10:00:00+00', page_number_in_session: 2}
+        - {event_id: b, session_started_at: '2026-03-01 10:00:00+00', page_number_in_session: 3}
+
+  - name: fct_page_views__new_event_continues_a_session_from_before_the_window
+    description: >
+      The window starts 48 h before the newest arrival (2026-02-27 11:00). The last view of the
+      visitor is older than that and is only read as context, not rewritten; the new view 20
+      minutes later continues its session and inherits the start.
+    model: fct_page_views
+    overrides:
+      macros:
+        is_incremental: true
+    given:
+      - input: ref('stg_clickstream__events')
+        rows:
+          - {event_id: old, event_type: page_view, cookie_id: c1, is_bot: false, page_type: home, page_url: /, occurred_at: '2026-02-27 10:50:00+00', received_at: '2026-02-27 10:50:01+00'}
+          - {event_id: fresh, event_type: page_view, cookie_id: c1, is_bot: false, page_type: product, page_url: /p/1, occurred_at: '2026-02-27 11:10:00+00', received_at: '2026-03-01 11:10:00+00'}
+      - input: ref('dim_user')
+        rows:
+          - {user_key: unknown, user_id: null, effective_from: '1900-01-01 00:00:00+00', effective_to: '9999-12-31 00:00:00+00'}
+      - input: this
+        rows:
+          - {event_id: old, cookie_id: c1, occurred_at: '2026-02-27 10:50:00+00', received_at: '2026-02-27 10:50:01+00'}
+          - {event_id: newest, cookie_id: c9, occurred_at: '2026-03-01 11:00:00+00', received_at: '2026-03-01 11:00:00+00'}
+    expect:
+      rows:
+        - {event_id: fresh, session_started_at: '2026-02-27 10:50:00+00', page_number_in_session: 2}
+
+  # ---- session aggregation ---------------------------------------------------------------------
+  - name: fct_sessions__aggregates_a_session
+    model: fct_sessions
+    given:
+      - input: ref('fct_page_views')
+        rows:
+          - {session_id: s1, cookie_id: c1, user_id: 5, user_key: k5, occurred_at: '2026-03-01 10:00:00+00', received_at: '2026-03-01 10:00:01+00', page_type: home, device: mobile, country: PL, utm_campaign: null}
+          - {session_id: s1, cookie_id: c1, user_id: 5, user_key: k5, occurred_at: '2026-03-01 10:01:00+00', received_at: '2026-03-01 10:01:01+00', page_type: product, device: mobile, country: PL, utm_campaign: spring_sale}
+          - {session_id: s1, cookie_id: c1, user_id: 5, user_key: k5, occurred_at: '2026-03-01 10:03:00+00', received_at: '2026-03-01 10:03:01+00', page_type: cart, device: mobile, country: PL, utm_campaign: spring_sale}
+          - {session_id: s2, cookie_id: c2, user_id: null, user_key: unknown, occurred_at: '2026-03-01 12:00:00+00', received_at: '2026-03-01 12:00:01+00', page_type: home, device: desktop, country: DE, utm_campaign: null}
+    expect:
+      rows:
+        - {session_id: s1, page_views: 3, is_bounce: false, entry_page_type: home, exit_page_type: cart, product_views: 1, reached_cart: true, reached_checkout: false, duration_seconds: 180, user_id: 5, utm_campaign: spring_sale}
+        - {session_id: s2, page_views: 1, is_bounce: true, entry_page_type: home, exit_page_type: home, product_views: 0, reached_cart: false, reached_checkout: false, duration_seconds: 0, user_id: null, utm_campaign: null}
+
+  # ---- dim_user ---------------------------------------------------------------------------------
+  - name: dim_user__versions_and_unknown_member
+    description: >
+      The first observed version reaches back to 1900, later versions start at their own time,
+      and the open version ends in year 9999. One unknown member is added.
+    model: dim_user
+    given:
+      - input: ref('snap_users')
+        rows:
+          - {dbt_scd_id: v1, user_id: 1, country: PL, plan: free, dbt_valid_from: '2026-01-05 00:00:00+00', dbt_valid_to: '2026-02-10 00:00:00+00'}
+          - {dbt_scd_id: v2, user_id: 1, country: DE, plan: free, dbt_valid_from: '2026-02-10 00:00:00+00', dbt_valid_to: null}
+          - {dbt_scd_id: v3, user_id: 2, country: FR, plan: premium, dbt_valid_from: '2026-01-07 00:00:00+00', dbt_valid_to: null}
+    expect:
+      rows:
+        - {user_key: v1, user_id: 1, country: PL, plan: free, effective_from: '1900-01-01 00:00:00+00', effective_to: '2026-02-10 00:00:00+00', is_current: false}
+        - {user_key: v2, user_id: 1, country: DE, plan: free, effective_from: '2026-02-10 00:00:00+00', effective_to: '9999-12-31 00:00:00+00', is_current: true}
+        - {user_key: v3, user_id: 2, country: FR, plan: premium, effective_from: '1900-01-01 00:00:00+00', effective_to: '9999-12-31 00:00:00+00', is_current: true}
+        - {user_key: ab623e1f8d51d01aeef17b147ac104c1, user_id: null, country: unknown, plan: unknown, effective_from: '1900-01-01 00:00:00+00', effective_to: '9999-12-31 00:00:00+00', is_current: true}

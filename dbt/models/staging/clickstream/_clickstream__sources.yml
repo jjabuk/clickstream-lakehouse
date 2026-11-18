@@ -1,0 +1,23 @@
+version: 2
+
+sources:
+  - name: clickstream
+    description: Raw clickstream exactly as delivered (duplicates, late rows, skewed clocks).
+    database: lk
+    schema: bronze
+    tables:
+      - name: events
+        identifier: clickstream_events
+        description: >
+          One row per delivery of an event. Grain is (event_id, server_ts): a duplicate
+          delivery shares event_id with the original and arrives later.
+        loaded_at_field: server_ts
+        data_tests:
+          - dbt_utils.unique_combination_of_columns:
+              arguments:
+                combination_of_columns: [event_id, server_ts]
+        columns:
+          - name: event_id
+            data_tests: [not_null]
+          - name: server_ts
+            data_tests: [not_null]

@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := help
 
 .PHONY: help setup hooks lint format format-check test check clean \
-	up down ps logs storage-init reset psql-shop psql-platform catalog-init hosts-check bootstrap test-integration day dbt-deps dbt-debug dbt-build dbt-docs warehouse-shell
+	up down ps logs storage-init reset psql-shop psql-platform catalog-init hosts-check bootstrap test-integration day dbt-deps dbt-debug dbt-build dbt-docs dbt-evaluate warehouse-shell
 
 -include .env
 export
@@ -97,6 +97,10 @@ dbt-docs: .env ## Build and serve the dbt docs with the lineage graph (http://lo
 	@mkdir -p data
 	$(DBT) docs generate $(DBT_ARGS)
 	$(DBT) docs serve $(DBT_ARGS) --port 8080
+
+dbt-evaluate: .env ## Audit the dbt project (structure, tests, docs) with dbt_project_evaluator
+	@mkdir -p data
+	$(DBT) build $(DBT_ARGS) --select package:dbt_project_evaluator dbt_project_evaluator_exceptions --vars '{enable_project_evaluator: true}'
 
 warehouse-shell: ## Read-only DuckDB shell on the marts, in UTC (needs the duckdb CLI; no dbt run at the same time)
 	duckdb -readonly data/warehouse.duckdb -cmd "SET TimeZone='UTC'"
