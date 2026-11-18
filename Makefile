@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := help
 
 .PHONY: help setup hooks lint format format-check test check clean \
-	up down ps logs storage-init reset psql-shop psql-platform catalog-init hosts-check bootstrap test-integration day dbt-deps dbt-debug dbt-build
+	up down ps logs storage-init reset psql-shop psql-platform catalog-init hosts-check bootstrap test-integration day dbt-deps dbt-debug dbt-build dbt-docs warehouse-shell
 
 -include .env
 export
@@ -92,6 +92,14 @@ dbt-debug: .env ## Check the dbt connection: Iceberg catalog, Postgres, packages
 dbt-build: .env ## Run and test all dbt models (ARGS="--select ..." to narrow)
 	@mkdir -p data
 	$(DBT) build $(DBT_ARGS) $(ARGS)
+
+dbt-docs: .env ## Build and serve the dbt docs with the lineage graph (http://localhost:8080)
+	@mkdir -p data
+	$(DBT) docs generate $(DBT_ARGS)
+	$(DBT) docs serve $(DBT_ARGS) --port 8080
+
+warehouse-shell: ## Read-only DuckDB shell on the marts, in UTC (needs the duckdb CLI; no dbt run at the same time)
+	duckdb -readonly data/warehouse.duckdb -cmd "SET TimeZone='UTC'"
 
 reset: .env ## Stop the stack and DELETE all data volumes
 	$(COMPOSE) down -v
