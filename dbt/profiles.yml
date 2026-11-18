@@ -1,0 +1,37 @@
+# DuckDB is the engine and holds staging, intermediate and marts in one file (ADR 0013).
+# It reads bronze from the Iceberg catalog (ADR 0003) and the shop's users straight from
+# Postgres (ADR 0014). Credentials come from the environment (`.env`, exported by make).
+clickstream:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      path: "{{ env_var('DBT_DUCKDB_PATH', 'data/warehouse.duckdb') }}"
+      threads: 4
+      extensions: [httpfs, iceberg, postgres]
+      settings:
+        # DuckDB takes the OS time zone otherwise, which moves late-evening UTC rows to the next
+        # day in any CAST(... AS DATE). Every date in this project is a UTC date.
+        TimeZone: UTC
+      secrets:
+        - type: s3
+          key_id: "{{ env_var('S3_ACCESS_KEY_ID') }}"
+          secret: "{{ env_var('S3_SECRET_ACCESS_KEY') }}"
+          endpoint: "{{ env_var('S3_ENDPOINT') | replace('http://', '') }}"
+          region: "{{ env_var('S3_REGION', 'garage') }}"
+          url_style: path
+          use_ssl: "false"
+      attach:
+        - path: lakehouse
+          alias: lk
+          type: iceberg
+          read_only: true
+          options:
+            endpoint: "{{ env_var('LAKEKEEPER_URL', 'http://localhost:8181') }}/catalog"
+            authorization_type: none
+            # Garage has no STS, so DuckDB signs with its own key (ADR 0003).
+            access_delegation_mode: none
+        - path: "host={{ env_var('SHOP_POSTGRES_HOST', 'localhost') }} port={{ env_var('SHOP_POSTGRES_PORT', '5432') }} dbname=shop user={{ env_var('SHOP_POSTGRES_USER') }} password={{ env_var('SHOP_POSTGRES_PASSWORD') }}"
+          alias: shop
+          type: postgres
+          read_only: true

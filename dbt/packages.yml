@@ -1,0 +1,10 @@
+# Pinned to the latest releases that support dbt-core 1.12. dbt_project_evaluator 2.x needs
+# dbt 2.0, so the last 1.x release is used. elementary (week 3) and audit_helper (week 4) are
+# added when they are needed.
+packages:
+  - package: dbt-labs/dbt_utils
+    version: 1.4.1
+  - package: metaplane/dbt_expectations
+    version: 0.10.10
+  - package: dbt-labs/dbt_project_evaluator
+    version: 1.4.1

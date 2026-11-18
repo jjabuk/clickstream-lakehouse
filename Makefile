@@ -1,12 +1,14 @@
 .DEFAULT_GOAL := help
 
 .PHONY: help setup hooks lint format format-check test check clean \
-	up down ps logs storage-init reset psql-shop psql-platform catalog-init hosts-check bootstrap test-integration day
+	up down ps logs storage-init reset psql-shop psql-platform catalog-init hosts-check bootstrap test-integration day dbt-deps dbt-debug dbt-build
 
 -include .env
 export
 
 COMPOSE := docker compose -f infra/docker-compose.yml --env-file .env
+DBT := uv run dbt
+DBT_ARGS := --project-dir dbt --profiles-dir dbt
 
 help: ## Show available targets
 	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z_-]+:.*## / {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -79,6 +81,17 @@ day: .env ## Generate one day and load it: make day DATE=2026-01-10 [SEED=42]
 	@test -n "$(DATE)" || { echo "usage: make day DATE=YYYY-MM-DD [SEED=42]"; exit 1; }
 	uv run python -m generator --date $(DATE) --seed $(SEED)
 	uv run python -m ingest --date $(DATE)
+
+dbt-deps: ## Install the dbt packages (versions pinned in dbt/packages.yml)
+	$(DBT) deps $(DBT_ARGS)
+
+dbt-debug: .env ## Check the dbt connection: Iceberg catalog, Postgres, packages
+	@mkdir -p data
+	$(DBT) debug $(DBT_ARGS)
+
+dbt-build: .env ## Run and test all dbt models (ARGS="--select ..." to narrow)
+	@mkdir -p data
+	$(DBT) build $(DBT_ARGS) $(ARGS)
 
 reset: .env ## Stop the stack and DELETE all data volumes
 	$(COMPOSE) down -v

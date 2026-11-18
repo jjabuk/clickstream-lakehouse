@@ -3,6 +3,8 @@ name = "clickstream-lakehouse"
 version = "0.1.0"
 requires-python = ">=3.12,<3.13"
 dependencies = [
+    "dbt-core==1.12.7",
+    "dbt-duckdb==1.11.1",
     "duckdb==2.0.0",
     "numpy==2.5.5",
     "psycopg[binary]==3.3.9",

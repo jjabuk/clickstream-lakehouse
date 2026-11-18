@@ -1,0 +1,40 @@
+name: clickstream
+version: "0.1.0"
+config-version: 2
+profile: clickstream
+
+model-paths: ["models"]
+macro-paths: ["macros"]
+snapshot-paths: ["snapshots"]
+test-paths: ["tests"]
+clean-targets: ["target", "dbt_packages"]
+
+vars:
+  # Incremental models reprocess this many hours back, so late events (up to 48 h, ADR 0004)
+  # still reach the facts they belong to.
+  lookback_hours: 48
+  # A new session starts after a gap longer than this between two page views of a visitor.
+  session_timeout_minutes: 30
+  # Sessions are assumed to be shorter than this, so this much history before the reprocessing
+  # window is enough context to sessionize the window (a data test guards the assumption).
+  session_context_hours: 12
+  # Range of dim_date; the world starts at the generator's epoch (2026-01-01).
+  dim_date_start: "2026-01-01"
+  dim_date_end: "2028-01-01"
+  # dbt_project_evaluator audits the project itself. It is off in a normal build (it would add
+  # ~48 models to the warehouse) and switched on by `make dbt-evaluate`.
+  enable_project_evaluator: false # read with a default in the config below; also set by the make target
+
+models:
+  clickstream:
+    staging:
+      +materialized: view
+    marts:
+      +materialized: table
+
+  dbt_project_evaluator:
+    +enabled: "{{ var('enable_project_evaluator', false) | as_bool }}"
+
+seeds:
+  dbt_project_evaluator:
+    +enabled: "{{ var('enable_project_evaluator', false) | as_bool }}"
