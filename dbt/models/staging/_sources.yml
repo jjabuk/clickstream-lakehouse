@@ -1,0 +1,25 @@
+version: 2
+
+sources:
+  - name: bronze
+    description: Raw clickstream exactly as delivered (duplicates, late rows, skewed clocks).
+    database: lk
+    schema: bronze
+    tables:
+      - name: clickstream_events
+        description: >
+          One row per delivery of an event. Grain is (event_id, server_ts): a duplicate
+          delivery shares event_id with the original and arrives later.
+        loaded_at_field: server_ts
+
+  - name: shop
+    description: The shop's Postgres database, read directly until CDC lands in week 5.
+    database: shop
+    schema: public
+    tables:
+      - name: users
+        description: One row per registered user; country and plan change over time.
+      - name: products
+        description: One row per product.
+      - name: categories
+        description: One row per product category.

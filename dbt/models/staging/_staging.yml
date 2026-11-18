@@ -1,0 +1,71 @@
+version: 2
+
+models:
+  - name: stg_clickstream__events
+    description: >
+      Grain: one row per event (`event_id`). Cleaned clickstream: duplicates removed (the first
+      delivery wins), a usable occurrence time, and a bot flag.
+    columns:
+      - name: event_id
+        description: Unique event identifier, shared by all deliveries of the same event.
+        data_tests: [unique, not_null]
+      - name: event_type
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [page_view, add_to_cart]
+      - name: client_ts
+        description: Timestamp from the client clock; it can be skewed.
+      - name: received_at
+        description: When the server received this delivery.
+        data_tests: [not_null]
+      - name: occurred_at
+        description: Best estimate of when the event happened, `least(client_ts, received_at)`.
+        data_tests: [not_null]
+      - name: arrival_lag_seconds
+        description: Seconds between occurrence and arrival; large values mean a late event.
+      - name: cookie_id
+        description: Browser cookie; null for bots.
+      - name: user_id
+        description: Registered user, present only while logged in.
+      - name: page_type
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [home, category, product, cart, checkout]
+      - name: is_bot
+        data_tests: [not_null]
+
+  - name: stg_shop__users
+    description: "Grain: one row per registered user (`user_id`), current state."
+    columns:
+      - name: user_id
+        data_tests: [unique, not_null]
+      - name: plan
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [free, premium]
+      - name: updated_at
+        description: Simulated time of the latest change to country or plan.
+        data_tests: [not_null]
+
+  - name: stg_shop__products
+    description: "Grain: one row per product (`product_id`)."
+    columns:
+      - name: product_id
+        data_tests: [unique, not_null]
+      - name: category_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_shop__categories')
+                field: category_id
+
+  - name: stg_shop__categories
+    description: "Grain: one row per product category (`category_id`)."
+    columns:
+      - name: category_id
+        data_tests: [unique, not_null]
