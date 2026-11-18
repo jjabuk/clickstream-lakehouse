@@ -35,3 +35,10 @@ clickstream:
           alias: shop
           type: postgres
           read_only: true
+
+    # Used by sqlfluff (make lint-sql, pre-commit, CI). Compiling a model renders names and never
+    # reads data, so this target needs neither the stack nor credentials: no attached databases.
+    lint:
+      type: duckdb
+      path: ":memory:"
+      threads: 1

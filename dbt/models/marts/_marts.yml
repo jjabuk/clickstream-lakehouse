@@ -277,9 +277,9 @@ models:
       - name: date_day
         data_type: date
         data_tests: [unique, not_null]
-      - name: year
+      - name: calendar_year
         data_type: bigint
-      - name: month
+      - name: calendar_month
         data_type: bigint
       - name: day_of_month
         data_type: bigint

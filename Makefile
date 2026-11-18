@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := help
 
 .PHONY: help setup hooks lint format format-check test check clean \
-	up down ps logs storage-init reset psql-shop psql-platform catalog-init hosts-check bootstrap test-integration day dbt-deps dbt-debug dbt-build dbt-docs dbt-evaluate warehouse-shell
+	up down ps logs storage-init reset psql-shop psql-platform catalog-init hosts-check bootstrap test-integration day dbt-deps dbt-debug dbt-build dbt-docs dbt-evaluate warehouse-shell lint-sql fix-sql
 
 -include .env
 export
@@ -20,8 +20,20 @@ setup: ## Install dependencies from uv.lock and git hooks
 hooks: ## Install pre-commit git hooks
 	uv run pre-commit install
 
-lint: ## Lint with ruff
+lint: lint-sql ## Lint Python with ruff and SQL with sqlfluff
 	uv run ruff check .
+
+# The dbt templater needs the package macros (dbt_utils, ...) but no stack: see the `lint` target
+# in dbt/profiles.yml. Packages are installed only when missing or when their pins change.
+dbt/dbt_packages: dbt/packages.yml dbt/package-lock.yml
+	$(DBT) deps $(DBT_ARGS)
+	@touch $@
+
+lint-sql: dbt/dbt_packages ## Lint the dbt SQL with sqlfluff (no stack needed)
+	uv run sqlfluff lint dbt/models dbt/tests
+
+fix-sql: dbt/dbt_packages ## Auto-fix what sqlfluff can in the dbt SQL (review the diff)
+	uv run sqlfluff fix dbt/models dbt/tests
 
 format: ## Format with ruff
 	uv run ruff format .

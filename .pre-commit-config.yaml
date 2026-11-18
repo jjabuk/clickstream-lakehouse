@@ -13,3 +13,12 @@ repos:
       - id: ruff-check
         args: [--fix]
       - id: ruff-format
+  - repo: local
+    hooks:
+      - id: sqlfluff
+        name: sqlfluff (dbt templater)
+        # The dbt templater compiles the whole project, so lint all of it, not just changed files.
+        entry: make lint-sql
+        language: system
+        files: ^(dbt/(models|tests)/.*\.sql|\.sqlfluff)$
+        pass_filenames: false

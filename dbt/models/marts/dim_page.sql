@@ -3,17 +3,27 @@
 
 with fixed_pages as (
 
-    select '/' as page_url, 'home' as page_type, null as category_id, null as product_id
-    union all
-    select '/cart', 'cart', null, null
-    union all
-    select '/checkout', 'checkout', null, null
+    select
+        fixed.page_url,
+        fixed.page_type,
+        fixed.category_id,
+        fixed.product_id
+    from (
+        values
+        ('/', 'home', cast(null as integer), cast(null as integer)),
+        ('/cart', 'cart', null, null),
+        ('/checkout', 'checkout', null, null)
+    ) as fixed (page_url, page_type, category_id, product_id)
 
 ),
 
 category_pages as (
 
-    select '/c/' || category_id as page_url, 'category' as page_type, category_id, null as product_id
+    select
+        '/c/' || category_id as page_url,
+        'category' as page_type,
+        category_id,
+        cast(null as integer) as product_id
     from {{ ref('stg_shop__categories') }}
 
 ),
@@ -47,4 +57,5 @@ select
     categories.category_slug,
     pages.product_id
 from pages
-left join {{ ref('stg_shop__categories') }} as categories on pages.category_id = categories.category_id
+left join {{ ref('stg_shop__categories') }} as categories
+    on pages.category_id = categories.category_id

@@ -60,7 +60,11 @@ page_views as (
 
 sessionization_input as (
 
-    select event_id, cookie_id, occurred_at from page_views
+    select
+        event_id,
+        cookie_id,
+        occurred_at
+    from page_views
     {% if is_incremental() %}
 
     union all
@@ -82,10 +86,13 @@ flagged as (
         event_id,
         cookie_id,
         occurred_at,
-        coalesce(
-            occurred_at - lag(occurred_at) over visitor > to_minutes({{ var('session_timeout_minutes') }}),
-            true
-        )::int as is_new_session
+        cast(
+            coalesce(
+                occurred_at - lag(occurred_at) over visitor
+                > to_minutes({{ var('session_timeout_minutes') }}),
+                true
+            ) as integer
+        ) as is_new_session
     from sessionization_input
     window visitor as (partition by cookie_id order by occurred_at, event_id)
 
@@ -116,7 +123,9 @@ sessions as (
 
 select
     page_views.event_id,
-    md5(page_views.cookie_id || '|' || epoch_ms(sessions.session_started_at)::varchar) as session_id,
+    md5(
+        page_views.cookie_id || '|' || cast(epoch_ms(sessions.session_started_at) as varchar)
+    ) as session_id,
     sessions.session_started_at,
     sessions.page_number_in_session,
     page_views.cookie_id,

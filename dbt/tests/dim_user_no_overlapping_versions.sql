@@ -10,4 +10,4 @@ inner join {{ ref('dim_user') }} as b
         a.user_id = b.user_id
         and a.user_key < b.user_key
         and a.effective_from < b.effective_to
-        and b.effective_from < a.effective_to
+        and a.effective_to > b.effective_from

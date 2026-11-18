@@ -13,8 +13,8 @@ with days as (
 select
     cast(strftime(date_day, '%Y%m%d') as integer) as date_key,
     cast(date_day as date) as date_day,
-    year(date_day) as year,
-    month(date_day) as month,
+    year(date_day) as calendar_year,
+    month(date_day) as calendar_month,
     day(date_day) as day_of_month,
     isoyear(date_day) as iso_year,
     weekofyear(date_day) as iso_week,
