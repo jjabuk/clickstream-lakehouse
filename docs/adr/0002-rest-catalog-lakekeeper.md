@@ -43,6 +43,8 @@ its metadata in its own Postgres database, separate from the `shop` database tha
   remote signing. The object store in use (ADR 0010) has no STS, so the warehouse is configured
   with remote signing for PyIceberg, and DuckDB, which does not implement remote signing, gets
   its own S3 credentials (`client-managed`). The day 2 smoke test must prove both paths.
+  *Update 2026-11-22:* remote signing proved unreliable with PyIceberg on CI runners, so it is
+  switched off and both engines use their own key (ADR 0003, amendment).
 - Because the contract is the REST spec, moving to Polaris or Nessie later is a configuration
   change, not a rewrite.
 - Object storage backing the warehouse is a separate decision (see the compose setup).

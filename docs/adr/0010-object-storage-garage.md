@@ -33,6 +33,8 @@ with an S3 API that covers what Iceberg needs.
 - **No STS, so no vended credentials.** Lakekeeper falls back to remote signing, which it
   documents as safe on Garage because Garage checks the whole signed request. PyIceberg supports
   remote signing; DuckDB does not, so DuckDB uses its own S3 key (ADR 0002, ADR 0003).
+  *Update 2026-11-22:* remote signing is now off and PyIceberg uses its own key too (ADR 0003,
+  amendment).
 - **No bucket versioning** (and no `ListObjectVersions`). Iceberg does not need it: snapshots and
   branches live in table metadata, not in the object store.
 - **Cluster layout must be initialised.** Even a single node needs `garage layout assign` and

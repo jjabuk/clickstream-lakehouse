@@ -72,8 +72,26 @@ class LoadResult:
 
 
 def lakehouse_catalog(env: Mapping[str, str]) -> Catalog:
+    """The Lakekeeper catalog, with PyIceberg signing S3 requests with its own key (ADR 0003).
+
+    The catalog vends no credentials (Garage has no STS) and does not sign requests, so the key
+    comes from the environment, the same key DuckDB uses. The endpoint must resolve on the host
+    too, which `garage` does through /etc/hosts (ADR 0012).
+    """
     base = env.get("LAKEKEEPER_URL", "http://localhost:8181")
-    return load_catalog("lakekeeper", type="rest", uri=f"{base}/catalog", warehouse="lakehouse")
+    return load_catalog(
+        "lakekeeper",
+        type="rest",
+        uri=f"{base}/catalog",
+        warehouse="lakehouse",
+        **{
+            "s3.endpoint": env["S3_ENDPOINT"],
+            "s3.access-key-id": env["S3_ACCESS_KEY_ID"],
+            "s3.secret-access-key": env["S3_SECRET_ACCESS_KEY"],
+            "s3.region": env.get("S3_REGION", "garage"),
+            "s3.path-style-access": "true",
+        },
+    )
 
 
 def ensure_table(catalog: Catalog, namespace: str = NAMESPACE) -> Table:

@@ -5,7 +5,9 @@ from pathlib import Path
 
 import duckdb
 import pytest
-from pyiceberg.catalog import Catalog, load_catalog
+from pyiceberg.catalog import Catalog
+
+from ingest.bronze import lakehouse_catalog
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -28,13 +30,9 @@ def env() -> dict[str, str]:
 
 
 @pytest.fixture(scope="session")
-def catalog() -> Catalog:
-    return load_catalog(
-        "lakekeeper",
-        type="rest",
-        uri="http://localhost:8181/catalog",
-        warehouse="lakehouse",
-    )
+def catalog(env: dict[str, str]) -> Catalog:
+    """The same catalog the ingest uses, so the tests exercise its S3 configuration."""
+    return lakehouse_catalog(env)
 
 
 @pytest.fixture

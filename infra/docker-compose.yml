@@ -87,7 +87,7 @@ services:
     command: ["serve"]
     environment:
       <<: *lakekeeper-env
-      # Links that Lakekeeper hands to clients (e.g. the remote-signing URL) must work from the host.
+      # Links that Lakekeeper hands to clients must work from the host.
       LAKEKEEPER__BASE_URI: http://localhost:8181
     depends_on:
       lakekeeper-migrate:

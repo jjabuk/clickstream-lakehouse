@@ -13,7 +13,7 @@ def rows(*ids: int) -> pa.Table:
     return pa.table({"id": pa.array(ids, pa.int64())}, schema=SCHEMA)
 
 
-def test_pyiceberg_roundtrip_through_remote_signing(catalog, namespace):
+def test_pyiceberg_roundtrip_with_its_own_key(catalog, namespace):
     table = catalog.create_table(f"{namespace}.t", schema=SCHEMA)
     table.append(rows(1, 2, 3))
     assert sorted(table.scan().to_arrow()["id"].to_pylist()) == [1, 2, 3]
@@ -22,6 +22,13 @@ def test_pyiceberg_roundtrip_through_remote_signing(catalog, namespace):
 def test_duckdb_reads_table_written_by_pyiceberg(catalog, namespace, duck):
     catalog.create_table(f"{namespace}.t", schema=SCHEMA).append(rows(1, 2, 3))
     assert duck.execute(f"SELECT count(*), sum(id) FROM lk.{namespace}.t").fetchone() == (3, 6)
+
+
+def test_catalog_does_not_sign_requests(catalog, namespace):
+    """Remote signing is off (ADR 0003): a client without its own key could not write."""
+    table = catalog.create_table(f"{namespace}.t", schema=SCHEMA)
+    assert "s3.signer" not in table.io.properties
+    assert table.io.properties.get("s3.remote-signing-enabled", "false") == "false"
 
 
 def test_duckdb_write_is_visible_to_pyiceberg(catalog, namespace, duck):
