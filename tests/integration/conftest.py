@@ -7,6 +7,8 @@ import duckdb
 import pytest
 from pyiceberg.catalog import Catalog
 
+from generator import shop_db
+from ingest import landing
 from ingest.bronze import lakehouse_catalog
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -36,6 +38,18 @@ def catalog(env: dict[str, str]) -> Catalog:
 
 
 @pytest.fixture
+def sandbox(env):
+    """A throwaway landing prefix and Postgres schema, removed after the test."""
+    suffix = uuid.uuid4().hex[:8]
+    prefix, schema = f"raw/test_{suffix}", f"test_{suffix}"
+    yield prefix, schema
+    fs = landing.filesystem(env)
+    fs.delete_dir_contents(f"{env['S3_BUCKET']}/{prefix}", missing_dir_ok=True)
+    with shop_db.connect(env) as conn:
+        conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+
+
+@pytest.fixture
 def namespace(catalog: Catalog):
     """A throwaway namespace, purged after the test."""
     name = f"smoke_{uuid.uuid4().hex[:8]}"
@@ -59,7 +73,7 @@ def duck(env: dict[str, str]):
     )
     con.execute(
         """ATTACH 'lakehouse' AS lk (
-            TYPE iceberg, ENDPOINT 'http://localhost:8181/catalog',
+            TYPE iceberg, URI 'http://localhost:8181/catalog',
             AUTHORIZATION_TYPE none, ACCESS_DELEGATION_MODE 'none')"""
     )
     yield con

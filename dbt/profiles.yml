@@ -28,7 +28,7 @@ clickstream:
           type: iceberg
           read_only: true
           options:
-            endpoint: "{{ env_var('LAKEKEEPER_URL', 'http://localhost:8181') }}/catalog"
+            uri: "{{ env_var('LAKEKEEPER_URL', 'http://localhost:8181') }}/catalog"
             authorization_type: none
             # Garage has no STS, so DuckDB signs with its own key (ADR 0003).
             access_delegation_mode: none
