@@ -1,0 +1,44 @@
+version: 2
+
+models:
+  - name: int_sessions__funnel_steps
+    description: >
+      Grain: one session (`session_id`). The ordered funnel steps it reached: a product view,
+      then the cart after that product view, then the checkout after that cart view.
+    data_tests:
+      # A closed funnel: no step without the one before it.
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "(not reached_cart or reached_product) and (not reached_checkout or reached_cart)"
+    columns:
+      - name: session_id
+        data_tests: [unique, not_null]
+      - name: reached_cart
+        data_tests: [not_null]
+      - name: reached_checkout
+        data_tests: [not_null]
+
+unit_tests:
+  - name: int_sessions__funnel_steps__steps_must_be_in_order
+    description: >
+      A cart view counts only after a product view, and a checkout only after that cart view.
+      s1 goes product → cart → checkout; s2 opens the cart before any product; s3 reaches the
+      checkout before its first cart-after-product view.
+    model: int_sessions__funnel_steps
+    given:
+      - input: ref('fct_page_views')
+        rows:
+          - {session_id: s1, page_number_in_session: 1, page_type: home}
+          - {session_id: s1, page_number_in_session: 2, page_type: product}
+          - {session_id: s1, page_number_in_session: 3, page_type: cart}
+          - {session_id: s1, page_number_in_session: 4, page_type: checkout}
+          - {session_id: s2, page_number_in_session: 1, page_type: cart}
+          - {session_id: s2, page_number_in_session: 2, page_type: home}
+          - {session_id: s3, page_number_in_session: 1, page_type: product}
+          - {session_id: s3, page_number_in_session: 2, page_type: checkout}
+          - {session_id: s3, page_number_in_session: 3, page_type: cart}
+    expect:
+      rows:
+        - {session_id: s1, reached_product: true, reached_cart: true, reached_checkout: true}
+        - {session_id: s2, reached_product: false, reached_cart: false, reached_checkout: false}
+        - {session_id: s3, reached_product: true, reached_cart: true, reached_checkout: false}

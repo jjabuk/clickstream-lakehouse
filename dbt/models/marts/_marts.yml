@@ -296,3 +296,120 @@ models:
         data_type: boolean
       - name: week_start_date
         data_type: date
+
+  - name: fct_funnel_daily
+    description: >
+      Grain: one day × device × campaign (`funnel_key`). Session counts at each ordered funnel
+      step (product view → cart → checkout) and bounced sessions. Only additive counts; rates are
+      ratios of sums, computed by the reader.
+    config:
+      contract:
+        enforced: true
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [date_key, device, utm_campaign]
+      - dbt_expectations.expect_table_aggregation_to_equal_other_table:
+          arguments:
+            expression: sum(sessions)
+            compare_model: ref('fct_sessions')
+            compare_expression: count(*)
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "sessions >= product_sessions and product_sessions >= cart_sessions and cart_sessions >= checkout_sessions"
+    columns:
+      - name: funnel_key
+        data_type: varchar
+        constraints: [{type: not_null}]
+        data_tests: [unique, not_null]
+      - name: date_key
+        data_type: integer
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_date')
+                field: date_key
+      - name: device
+        data_type: varchar
+        data_tests: [not_null]
+      - name: utm_campaign
+        data_type: varchar
+        description: Campaign, or `(none)` for sessions without one.
+        data_tests: [not_null]
+      - name: sessions
+        data_type: bigint
+      - name: bounced_sessions
+        data_type: bigint
+        description: Sessions with a single page view; bounce rate = bounced_sessions / sessions.
+      - name: product_sessions
+        data_type: bigint
+      - name: cart_sessions
+        data_type: bigint
+        description: Sessions that reached the cart after a product view.
+      - name: checkout_sessions
+        data_type: bigint
+        description: Sessions that reached the checkout after a cart view that followed a product view.
+
+  - name: fct_retention_weekly
+    description: >
+      Grain: one cohort week × activity week (`retention_key`). A visitor (cookie) belongs to the
+      ISO week of their first human page view. `cohort_visitors` repeats the cohort's size on
+      every row, so it must not be summed across activity weeks.
+    config:
+      contract:
+        enforced: true
+    data_tests:
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "active_visitors <= cohort_visitors and activity_week >= cohort_week"
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "weeks_since_first_visit > 0 or active_visitors = cohort_visitors"
+    columns:
+      - name: retention_key
+        data_type: varchar
+        constraints: [{type: not_null}]
+        data_tests: [unique, not_null]
+      - name: cohort_week
+        data_type: date
+        description: Monday of the visitor's first week.
+        data_tests: [not_null]
+      - name: activity_week
+        data_type: date
+        data_tests: [not_null]
+      - name: weeks_since_first_visit
+        data_type: integer
+      - name: cohort_visitors
+        data_type: bigint
+      - name: active_visitors
+        data_type: bigint
+
+  - name: fct_traffic_daily
+    description: >
+      Grain: one day × traffic type (`traffic_key`, `is_bot`). Deduplicated events of humans and
+      bots, to show what bot filtering removes from the other marts.
+    config:
+      contract:
+        enforced: true
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [date_key, is_bot]
+    columns:
+      - name: traffic_key
+        data_type: varchar
+        constraints: [{type: not_null}]
+        data_tests: [unique, not_null]
+      - name: date_key
+        data_type: integer
+        data_tests: [not_null]
+      - name: is_bot
+        data_type: boolean
+        data_tests: [not_null]
+      - name: events
+        data_type: bigint
+      - name: page_view_events
+        data_type: bigint
+      - name: add_to_cart_events
+        data_type: bigint
