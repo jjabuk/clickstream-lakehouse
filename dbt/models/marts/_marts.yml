@@ -16,6 +16,18 @@ models:
       - dbt_utils.expression_is_true:
           arguments:
             expression: "received_at >= occurred_at"
+      # elementary: human page views per day of occurrence, and how stale the newest row is.
+      - elementary.volume_anomalies:
+          arguments:
+            timestamp_column: occurred_at
+            time_bucket: {period: day, count: 1}
+          config:
+            severity: warn
+      - elementary.freshness_anomalies:
+          arguments:
+            timestamp_column: received_at
+          config:
+            severity: warn
     columns:
       - name: event_id
         data_type: varchar

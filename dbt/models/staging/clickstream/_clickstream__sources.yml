@@ -16,6 +16,19 @@ sources:
           - dbt_utils.unique_combination_of_columns:
               arguments:
                 combination_of_columns: [event_id, server_ts]
+          # elementary: a batch much smaller or larger than usual (a lost file, a duplicated
+          # load), measured per arrival day against the simulated clock. Warn only: an anomaly is
+          # a signal to look at, not proof of bad data.
+          - elementary.volume_anomalies:
+              arguments:
+                timestamp_column: server_ts
+                time_bucket: {period: day, count: 1}
+              config:
+                severity: warn
+          # Columns added, removed or retyped, e.g. utm_campaign on its first day.
+          - elementary.schema_changes:
+              config:
+                severity: warn
         columns:
           - name: event_id
             data_tests: [not_null]

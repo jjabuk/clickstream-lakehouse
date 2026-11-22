@@ -1,14 +1,18 @@
 .DEFAULT_GOAL := help
 
 .PHONY: help setup hooks lint format format-check test check clean \
-	up down ps logs storage-init reset psql-shop psql-platform catalog-init hosts-check bootstrap test-integration day dbt-deps dbt-debug dbt-build dbt-docs dbt-evaluate warehouse-shell lint-sql fix-sql \
+	up down ps logs storage-init reset psql-shop psql-platform catalog-init hosts-check bootstrap test-integration day dbt-deps dbt-debug dbt-build dbt-docs dbt-evaluate elementary-report warehouse-shell lint-sql fix-sql \
 	ci-days ci-replay ci-verify-incremental ci-state ci-mode ci-slim ci-logs
 
 -include .env
 export
 
 COMPOSE := docker compose -f infra/docker-compose.yml --env-file .env
-DBT := uv run dbt
+
+# The simulated clock: the end of the latest arrival day `make day` has loaded. elementary's
+# anomaly tests measure "now" against it instead of the wall clock (see dbt_project.yml).
+SIM_CLOCK ?= data/simulated_now
+DBT = SIMULATED_NOW=$$(cat $(SIM_CLOCK) 2>/dev/null) uv run dbt
 DBT_ARGS := --project-dir dbt --profiles-dir dbt
 
 help: ## Show available targets
@@ -90,10 +94,6 @@ psql-platform: .env ## Open psql in the platform instance (Lakekeeper catalog)
 
 SEED ?= 42
 
-day: .env ## Generate one day and load it: make day DATE=2026-01-10 [SEED=42]
-	@test -n "$(DATE)" || { echo "usage: make day DATE=YYYY-MM-DD [SEED=42]"; exit 1; }
-	uv run python -m generator --date $(DATE) --seed $(SEED)
-	uv run python -m ingest --date $(DATE)
 
 dbt-deps: ## Install the dbt packages (versions pinned in dbt/packages.yml)
 	$(DBT) deps $(DBT_ARGS)
@@ -116,6 +116,12 @@ dbt-docs: .env ## Build and serve the dbt docs with the lineage graph (http://lo
 dbt-evaluate: dbt/dbt_packages ## Audit the dbt project (structure, tests, docs) with dbt_project_evaluator (no stack needed)
 	$(DBT) build $(DBT_ARGS) --target lint --select package:dbt_project_evaluator dbt_project_evaluator_exceptions --vars '{enable_project_evaluator: true}'
 
+elementary-report: ## Build the elementary report (tests, anomalies, run history) into data/elementary_report.html
+	@# edr runs dbt from its own project directory, so the warehouse path must be absolute.
+	DBT_DUCKDB_PATH=$(abspath $(or $(DBT_DUCKDB_PATH),data/warehouse.duckdb)) \
+		uv run edr report --project-dir dbt --profiles-dir dbt \
+		--file-path $(CURDIR)/data/elementary_report.html --open-browser false
+
 warehouse-shell: ## Read-only DuckDB shell on the marts, in UTC (needs the duckdb CLI; no dbt run at the same time)
 	duckdb -readonly data/warehouse.duckdb -cmd "SET TimeZone='UTC'"
 
@@ -132,16 +138,18 @@ CI_DIR := data/ci
 CI_STATE ?= $(CI_DIR)/state
 CI_BASE ?= origin/main
 CI_WAREHOUSE := DBT_DUCKDB_PATH=$(CI_DIR)/warehouse.duckdb
+# The CI clock lives next to the CI warehouse, so a local CI run does not move the dev clock.
+ci-%: SIM_CLOCK = $(CI_DIR)/simulated_now
 
 ci-days: .env ## CI: generate and load the CI days without building dbt
-	@for d in $(CI_DATES); do $(MAKE) --no-print-directory day DATE=$$d SEED=$(SEED) || exit 1; done
+	@for d in $(CI_DATES); do $(MAKE) --no-print-directory day DATE=$$d SEED=$(SEED) SIM_CLOCK=$(SIM_CLOCK) || exit 1; done
 
 # Unit tests run once at the end: those of an incremental model mock `this`, and dbt reads the
 # fixture's columns from the existing table, which an empty warehouse does not have yet.
 ci-replay: .env dbt/dbt_packages ## CI: from an empty warehouse, load each CI day and dbt build after it
 	rm -rf $(CI_DIR) && mkdir -p $(CI_DIR)
 	@for d in $(CI_DATES); do \
-		$(MAKE) --no-print-directory day DATE=$$d SEED=$(SEED) && \
+		$(MAKE) --no-print-directory day DATE=$$d SEED=$(SEED) SIM_CLOCK=$(SIM_CLOCK) && \
 		$(CI_WAREHOUSE) $(DBT) build $(DBT_ARGS) --exclude-resource-type unit_test || exit 1; \
 	done
 	$(CI_WAREHOUSE) $(DBT) test $(DBT_ARGS) --select test_type:unit
@@ -158,10 +166,12 @@ ci-state: ## CI: collect the production state (manifest and warehouse) that pull
 ci-mode: .env dbt/dbt_packages ## CI: decide whether a pull request gets the slim build or the full replay
 	./ci/choose_mode.sh $(abspath $(CI_STATE)) $(CI_BASE)
 
+# elementary's own tables are built too: its run hooks and anomaly tests write to them in the PR
+# database, which starts empty. They are small and hold only this run's results.
 ci-slim: .env dbt/dbt_packages ## CI: build state:modified+ only, deferring the rest to the production state
 	mkdir -p $(CI_DIR) && rm -f $(CI_DIR)/pr.duckdb
 	DBT_DEFER_DUCKDB_PATH=$(CI_STATE)/warehouse.duckdb $(DBT) build $(DBT_ARGS) --target ci \
-		--select state:modified+ --defer --state $(abspath $(CI_STATE))
+		--select state:modified+ package:elementary --defer --state $(abspath $(CI_STATE))
 
 ci-logs: .env ## CI: print the last lines of every service log (no follow, for failed runs)
 	$(COMPOSE) logs --no-color --tail=200

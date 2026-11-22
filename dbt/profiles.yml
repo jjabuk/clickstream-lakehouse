@@ -59,3 +59,16 @@ clickstream:
       type: duckdb
       path: ":memory:"
       threads: 1
+
+# Read by the elementary CLI (`make elementary-report`): the warehouse file, and the schema where
+# the elementary package keeps test results and run artifacts.
+elementary:
+  target: default
+  outputs:
+    default:
+      type: duckdb
+      path: "{{ env_var('DBT_DUCKDB_PATH', 'data/warehouse.duckdb') }}"
+      schema: main_elementary
+      threads: 1
+      settings:
+        TimeZone: UTC

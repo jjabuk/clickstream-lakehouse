@@ -14,6 +14,7 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "elementary-data==0.26.1",
     "pre-commit==4.7.0",
     "pytest==9.2.0",
     "ruff==0.17.5",
