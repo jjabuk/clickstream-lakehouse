@@ -106,6 +106,8 @@ models:
     description: >
       Grain: one session (`session_id`), a run of one visitor's page views with no gap longer
       than `session_timeout_minutes`. A plain table rebuilt from fct_page_views on every run.
+      Device and country come from the entry page view; user and campaign from the first page
+      view that has one, so a mid-session login attributes the whole session to the user.
     config:
       contract:
         enforced: true

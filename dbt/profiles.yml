@@ -4,7 +4,7 @@
 clickstream:
   target: dev
   outputs:
-    dev:
+    dev: &dev
       type: duckdb
       path: "{{ env_var('DBT_DUCKDB_PATH', 'data/warehouse.duckdb') }}"
       threads: 4
@@ -22,7 +22,8 @@ clickstream:
           url_style: path
           use_ssl: "false"
       attach:
-        - path: lakehouse
+        - &iceberg
+          path: lakehouse
           alias: lk
           type: iceberg
           read_only: true
@@ -31,13 +32,29 @@ clickstream:
             authorization_type: none
             # Garage has no STS, so DuckDB signs with its own key (ADR 0003).
             access_delegation_mode: none
-        - path: "host={{ env_var('SHOP_POSTGRES_HOST', 'localhost') }} port={{ env_var('SHOP_POSTGRES_PORT', '5432') }} dbname=shop user={{ env_var('SHOP_POSTGRES_USER') }} password={{ env_var('SHOP_POSTGRES_PASSWORD') }}"
+        - &shop
+          path: "host={{ env_var('SHOP_POSTGRES_HOST', 'localhost') }} port={{ env_var('SHOP_POSTGRES_PORT', '5432') }} dbname=shop user={{ env_var('SHOP_POSTGRES_USER') }} password={{ env_var('SHOP_POSTGRES_PASSWORD') }}"
           alias: shop
           type: postgres
           read_only: true
 
-    # Used by sqlfluff (make lint-sql, pre-commit, CI). Compiling a model renders names and never
-    # reads data, so this target needs neither the stack nor credentials: no attached databases.
+    # Slim CI on pull requests (ADR 0015): builds only the modified models into its own file and
+    # defers every other ref to the production warehouse that the last build of `main` uploaded.
+    # The production manifest names that warehouse's database `warehouse` (the file's stem), so it
+    # is attached under that alias, read-only. Everything else is the dev target.
+    ci:
+      <<: *dev
+      path: data/ci/pr.duckdb
+      attach:
+        - *iceberg
+        - *shop
+        - path: "{{ env_var('DBT_DEFER_DUCKDB_PATH', 'data/ci/state/warehouse.duckdb') }}"
+          alias: warehouse
+          read_only: true
+
+    # Used by sqlfluff (make lint-sql, pre-commit, CI) and dbt_project_evaluator (make
+    # dbt-evaluate). Compiling a model renders names and the evaluator reads only the project
+    # graph, so neither touches data: no stack, no credentials, no attached databases.
     lint:
       type: duckdb
       path: ":memory:"

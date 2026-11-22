@@ -1,5 +1,12 @@
 -- One row per event. Bronze keeps every delivery; duplicates are removed here, keeping the first
 -- delivery of each event_id.
+--
+-- Bronze evolves its schema: utm_campaign is added on the first day a batch carries it. Before
+-- that day the column does not exist, so staging supplies it as null and the models downstream
+-- keep one shape whichever day the warehouse is built from.
+{%- set source_columns = adapter.get_columns_in_relation(source('clickstream', 'events'))
+    | map(attribute='name') | map('lower') | list %}
+
 with source as (
 
     select * from {{ source('clickstream', 'events') }}
@@ -36,7 +43,11 @@ renamed as (
         page_url,
         product_id,
         quantity,
-        utm_campaign,
+        {% if 'utm_campaign' in source_columns -%}
+            utm_campaign,
+        {%- else -%}
+            cast(null as varchar) as utm_campaign,
+        {%- endif %}
 
         _ingested_at as ingested_at
     from first_delivery

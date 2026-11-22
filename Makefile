@@ -1,7 +1,8 @@
 .DEFAULT_GOAL := help
 
 .PHONY: help setup hooks lint format format-check test check clean \
-	up down ps logs storage-init reset psql-shop psql-platform catalog-init hosts-check bootstrap test-integration day dbt-deps dbt-debug dbt-build dbt-docs dbt-evaluate warehouse-shell lint-sql fix-sql
+	up down ps logs storage-init reset psql-shop psql-platform catalog-init hosts-check bootstrap test-integration day dbt-deps dbt-debug dbt-build dbt-docs dbt-evaluate warehouse-shell lint-sql fix-sql \
+	ci-days ci-replay ci-verify-incremental ci-state ci-mode ci-slim ci-logs
 
 -include .env
 export
@@ -11,7 +12,7 @@ DBT := uv run dbt
 DBT_ARGS := --project-dir dbt --profiles-dir dbt
 
 help: ## Show available targets
-	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z_-]+:.*## / {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z_-]+:.*## / {printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
 setup: ## Install dependencies from uv.lock and git hooks
 	uv sync --frozen
@@ -47,7 +48,7 @@ test: ## Run unit tests (no stack needed)
 test-integration: ## Run smoke tests against the running stack
 	uv run pytest -m integration
 
-check: lint format-check test ## Run everything CI runs (lint, format check, tests)
+check: lint format-check test dbt-evaluate ## Run the stackless CI checks (lint, format, unit tests, dbt audit)
 
 clean: ## Remove caches
 	rm -rf .ruff_cache .pytest_cache
@@ -110,12 +111,60 @@ dbt-docs: .env ## Build and serve the dbt docs with the lineage graph (http://lo
 	$(DBT) docs generate $(DBT_ARGS)
 	$(DBT) docs serve $(DBT_ARGS) --port 8080
 
-dbt-evaluate: .env ## Audit the dbt project (structure, tests, docs) with dbt_project_evaluator
-	@mkdir -p data
-	$(DBT) build $(DBT_ARGS) --select package:dbt_project_evaluator dbt_project_evaluator_exceptions --vars '{enable_project_evaluator: true}'
+# The evaluator reads only the project graph, so it runs on the stackless `lint` target and its
+# ~50 audit tables live in memory instead of the warehouse.
+dbt-evaluate: dbt/dbt_packages ## Audit the dbt project (structure, tests, docs) with dbt_project_evaluator (no stack needed)
+	$(DBT) build $(DBT_ARGS) --target lint --select package:dbt_project_evaluator dbt_project_evaluator_exceptions --vars '{enable_project_evaluator: true}'
 
 warehouse-shell: ## Read-only DuckDB shell on the marts, in UTC (needs the duckdb CLI; no dbt run at the same time)
 	duckdb -readonly data/warehouse.duckdb -cmd "SET TimeZone='UTC'"
+
+# --- CI (ADR 0015) ---------------------------------------------------------------------------
+# Everything CI does with the stack, runnable locally. The CI warehouse is data/ci/warehouse.duckdb
+# (its file stem `warehouse` is the database name the slim build defers to), so a local run never
+# touches data/warehouse.duckdb. Run it on an empty stack: the replay is only meaningful if bronze
+# grows day by day, e.g. COMPOSE_PROJECT_NAME=clickstream-ci with the dev stack stopped.
+
+# Four arrival days around the day utm_campaign appears (2026-02-01), so the replay crosses a
+# schema change and late events from earlier days.
+CI_DATES ?= 2026-01-31 2026-02-01 2026-02-02 2026-02-03
+CI_DIR := data/ci
+CI_STATE ?= $(CI_DIR)/state
+CI_BASE ?= origin/main
+CI_WAREHOUSE := DBT_DUCKDB_PATH=$(CI_DIR)/warehouse.duckdb
+
+ci-days: .env ## CI: generate and load the CI days without building dbt
+	@for d in $(CI_DATES); do $(MAKE) --no-print-directory day DATE=$$d SEED=$(SEED) || exit 1; done
+
+# Unit tests run once at the end: those of an incremental model mock `this`, and dbt reads the
+# fixture's columns from the existing table, which an empty warehouse does not have yet.
+ci-replay: .env dbt/dbt_packages ## CI: from an empty warehouse, load each CI day and dbt build after it
+	rm -rf $(CI_DIR) && mkdir -p $(CI_DIR)
+	@for d in $(CI_DATES); do \
+		$(MAKE) --no-print-directory day DATE=$$d SEED=$(SEED) && \
+		$(CI_WAREHOUSE) $(DBT) build $(DBT_ARGS) --exclude-resource-type unit_test || exit 1; \
+	done
+	$(CI_WAREHOUSE) $(DBT) test $(DBT_ARGS) --select test_type:unit
+
+ci-verify-incremental: .env ## CI: after ci-replay, fail unless a full refresh of the incremental models changes nothing
+	cp $(CI_DIR)/warehouse.duckdb $(CI_DIR)/incremental.duckdb
+	$(CI_WAREHOUSE) $(DBT) run $(DBT_ARGS) --full-refresh --select config.materialized:incremental+
+	uv run python ci/compare_warehouses.py $(CI_DIR)/incremental.duckdb $(CI_DIR)/warehouse.duckdb
+
+ci-state: ## CI: collect the production state (manifest and warehouse) that pull requests defer to
+	rm -rf $(CI_STATE) && mkdir -p $(CI_STATE)
+	cp dbt/target/manifest.json $(CI_DIR)/warehouse.duckdb $(CI_STATE)/
+
+ci-mode: .env dbt/dbt_packages ## CI: decide whether a pull request gets the slim build or the full replay
+	./ci/choose_mode.sh $(abspath $(CI_STATE)) $(CI_BASE)
+
+ci-slim: .env dbt/dbt_packages ## CI: build state:modified+ only, deferring the rest to the production state
+	mkdir -p $(CI_DIR) && rm -f $(CI_DIR)/pr.duckdb
+	DBT_DEFER_DUCKDB_PATH=$(CI_STATE)/warehouse.duckdb $(DBT) build $(DBT_ARGS) --target ci \
+		--select state:modified+ --defer --state $(abspath $(CI_STATE))
+
+ci-logs: .env ## CI: print the last lines of every service log (no follow, for failed runs)
+	$(COMPOSE) logs --no-color --tail=200
 
 reset: .env ## Stop the stack and DELETE all data volumes
 	$(COMPOSE) down -v

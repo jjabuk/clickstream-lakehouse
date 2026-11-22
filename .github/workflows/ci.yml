@@ -1,0 +1,122 @@
+# CI (ADR 0015). Two jobs:
+#
+#   check  no stack: ruff, sqlfluff, unit tests, dbt_project_evaluator (`make check`).
+#   dbt    the real stack in docker compose, seeded synthetic days, then one of:
+#            full  (main, manual runs, and PRs that touch incremental logic or the data): replay
+#                  the CI days one by one with a dbt build after each, then verify that a full
+#                  refresh of the incremental models changes nothing. On main the result is
+#                  uploaded as the production state that pull requests defer to.
+#            slim  (other PRs): build only state:modified+ and defer every other ref to the
+#                  production state of the last green main run.
+#
+# Every step is a make target, so the same run works locally (see `make help`, section CI).
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read # download the production state artifact of an earlier main run
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  UV_VERSION: "0.13.7"
+  STATE_ARTIFACT: prod-state
+
+jobs:
+  check:
+    name: Lint, unit tests, dbt audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+      - run: uv sync --frozen
+      - run: make check
+
+  dbt:
+    name: dbt build on the stack
+    needs: check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # ci-mode diffs the PR against its base branch
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+      - run: uv sync --frozen
+
+      # Every client reaches Garage under one name (ADR 0012).
+      - name: Resolve the S3 hostname
+        run: echo "127.0.0.1 garage" | sudo tee -a /etc/hosts
+      - run: make bootstrap
+      - name: Integration tests (generator and ingest on the stack)
+        run: make test-integration
+
+      - name: Find the production state of main
+        id: prod
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          run_id=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --branch main \
+            --event push --status success --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+          echo "Production state: ${run_id:-none}"
+      - name: Download the production state
+        if: steps.prod.outputs.run_id != ''
+        # A missing or expired artifact is not an error: ci-mode then falls back to a full run.
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ env.STATE_ARTIFACT }}
+          path: data/ci/state
+          run-id: ${{ steps.prod.outputs.run_id }}
+          github-token: ${{ github.token }}
+      - name: Choose slim or full
+        id: mode
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            make --no-print-directory ci-mode CI_BASE="origin/$GITHUB_BASE_REF"
+          else
+            echo "mode=full" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Slim build (state:modified+, deferred to main)
+        if: steps.mode.outputs.mode == 'slim'
+        run: make ci-days && make ci-slim
+      - name: Full replay, one dbt build per arrival day
+        if: steps.mode.outputs.mode == 'full'
+        run: make ci-replay
+      - name: Incremental result equals a full refresh
+        if: steps.mode.outputs.mode == 'full'
+        run: make ci-verify-incremental
+
+      - name: Collect the production state
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: make ci-state
+      - name: Upload the production state
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ env.STATE_ARTIFACT }}
+          path: data/ci/state/
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Service logs
+        if: failure()
+        run: make ci-logs
