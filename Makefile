@@ -94,6 +94,11 @@ psql-platform: .env ## Open psql in the platform instance (Lakekeeper catalog)
 
 SEED ?= 42
 
+day: .env ## Generate one day and load it through write-audit-publish: make day DATE=2026-01-10 [SEED=42] [FAULT=truncated|duplicated|bad_event_type]
+	@test -n "$(DATE)" || { echo "usage: make day DATE=YYYY-MM-DD [SEED=42] [FAULT=...]"; exit 1; }
+	uv run python -m generator --date $(DATE) --seed $(SEED) $(if $(FAULT),--fault $(FAULT))
+	uv run python -m ingest --date $(DATE)
+	@python3 ci/advance_clock.py $(DATE) $(SIM_CLOCK)
 
 dbt-deps: ## Install the dbt packages (versions pinned in dbt/packages.yml)
 	$(DBT) deps $(DBT_ARGS)

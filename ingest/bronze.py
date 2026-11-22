@@ -8,9 +8,14 @@ Bronze keeps the data as it arrived: duplicates, late rows and skewed clocks are
   gives the same table; it never doubles the rows.
 - **Schema drift is absorbed.** A column that appears in the file but not in the table
   (`utm_campaign` from `utm_start`) is added with `union_by_name`; older rows read it as NULL.
+- **Write-audit-publish** (ADR 0008). The day is written to a branch `wap_YYYYMMDD` made from the
+  current `main`, audited there (`ingest.audit`), and `main` is fast-forwarded to it only if the
+  audit passes. A failed batch stays on its branch; `main`, and everything dbt builds, never sees
+  it. Schema changes are table-wide in Iceberg, so a new column reaches `main` before the audit.
 """
 
 import warnings
+from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
@@ -26,6 +31,8 @@ from pyiceberg.schema import Schema
 from pyiceberg.table import Table
 from pyiceberg.transforms import DayTransform
 from pyiceberg.types import LongType, NestedField, StringType, TimestamptzType
+
+from ingest.audit import HISTORY_DAYS, AuditResult, audit_batch
 
 NAMESPACE = "bronze"
 TABLE_NAME = "clickstream_events"
@@ -69,6 +76,20 @@ _PARSE_SCHEMA = pa.schema(
 class LoadResult:
     rows: int
     new_columns: tuple[str, ...]
+    snapshot_id: int
+
+
+class AuditFailed(Exception):
+    """The batch broke the bronze contract; it is left on `branch` and `main` is unchanged."""
+
+    def __init__(self, day: date, branch: str, result: AuditResult) -> None:
+        self.day, self.branch, self.result = day, branch, result
+        details = "; ".join(result.violations)
+        super().__init__(f"{day}: audit failed, batch kept on branch '{branch}': {details}")
+
+
+def wap_branch(day: date) -> str:
+    return f"wap_{day:%Y%m%d}"
 
 
 def lakehouse_catalog(env: Mapping[str, str]) -> Catalog:
@@ -96,9 +117,55 @@ def lakehouse_catalog(env: Mapping[str, str]) -> Catalog:
 
 def ensure_table(catalog: Catalog, namespace: str = NAMESPACE) -> Table:
     catalog.create_namespace_if_not_exists(namespace)
-    return catalog.create_table_if_not_exists(
+    table = catalog.create_table_if_not_exists(
         f"{namespace}.{TABLE_NAME}", schema=SCHEMA, partition_spec=PARTITION_SPEC
     )
+    if table.current_snapshot() is None:
+        # A branch starts from a snapshot of main, and a table without one cannot be written
+        # to a branch at all. An empty commit gives the first audited day its base.
+        table.append(table.schema().as_arrow().empty_table())
+        table = table.refresh()
+    return table
+
+
+def _arrival_day(day: date):
+    start = datetime.combine(day, time.min, tzinfo=UTC)
+    return And(
+        GreaterThanOrEqual("server_ts", start.isoformat()),
+        LessThan("server_ts", (start + timedelta(days=1)).isoformat()),
+    )
+
+
+def _volume_history(table: Table, day: date) -> list[int]:
+    """Rows per arrival day on main in the HISTORY_DAYS before `day`; days without data skipped."""
+    start = datetime.combine(day - timedelta(days=HISTORY_DAYS), time.min, tzinfo=UTC)
+    end = datetime.combine(day, time.min, tzinfo=UTC)
+    ts = (
+        table.scan(
+            row_filter=And(
+                GreaterThanOrEqual("server_ts", start.isoformat()),
+                LessThan("server_ts", end.isoformat()),
+            ),
+            selected_fields=("server_ts",),
+        )
+        .to_arrow()["server_ts"]
+        .to_pylist()
+    )
+    return list(Counter(t.date() for t in ts).values())
+
+
+def publish(table: Table, branch: str, base_snapshot_id: int) -> Table:
+    """Fast-forward main to the branch head, then drop the branch.
+
+    Only a fast-forward: if main moved after the branch was made, publishing would silently drop
+    those commits, so it refuses and the day has to be re-run on top of the new main.
+    """
+    table = table.refresh()
+    head = table.current_snapshot()
+    if head is None or head.snapshot_id != base_snapshot_id:
+        raise RuntimeError(f"main moved since '{branch}' was created; re-run the day")
+    table.manage_snapshots().set_current_snapshot(ref_name=branch).remove_branch(branch).commit()
+    return table.refresh()
 
 
 def read_landing(fs: pafs.S3FileSystem, path: str) -> pa.Table:
@@ -150,18 +217,34 @@ def load_day(
         table = catalog.load_table(f"{namespace}.{TABLE_NAME}")
 
     start = datetime.combine(day, time.min, tzinfo=UTC)
-    in_day = And(
-        GreaterThanOrEqual("server_ts", start.isoformat()),
-        LessThan("server_ts", (start + timedelta(days=1)).isoformat()),
-    )
     if data.num_rows and not (
         pc.min(data["server_ts"]).as_py() >= start
         and pc.max(data["server_ts"]).as_py() < start + timedelta(days=1)
     ):
         raise ValueError(f"{path} holds rows outside arrival day {day}")
+    in_day = _arrival_day(day)
 
+    # Write: to a fresh branch made from the current main. A branch left by an earlier failed
+    # audit was made from an older main, so it is replaced, not reused.
+    branch = wap_branch(day)
+    base = table.current_snapshot().snapshot_id
+    if branch in table.refs():
+        table.manage_snapshots().remove_branch(branch).commit()
+    table.manage_snapshots().create_branch(base, branch).commit()
+    table = table.refresh()
     with warnings.catch_warnings():
         # The first load of a day deletes nothing, which PyIceberg reports as a warning.
         warnings.filterwarnings("ignore", message="Delete operation did not match any records")
-        table.overwrite(_conform(data, table), overwrite_filter=in_day)
-    return LoadResult(data.num_rows, tuple(f.name for f in new_fields))
+        table.overwrite(_conform(data, table), overwrite_filter=in_day, branch=branch)
+    table = table.refresh()
+
+    # Audit: what the branch now holds for the day, against the volume of the days before.
+    head = table.refs()[branch].snapshot_id
+    batch = table.scan(row_filter=in_day, snapshot_id=head).to_arrow()
+    result = audit_batch(batch, _volume_history(table, day))
+    if not result.passed:
+        raise AuditFailed(day, branch, result)
+
+    # Publish.
+    table = publish(table, branch, base)
+    return LoadResult(data.num_rows, tuple(f.name for f in new_fields), head)

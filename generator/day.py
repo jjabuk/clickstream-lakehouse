@@ -12,6 +12,7 @@ from generator import shop_db
 from generator.batch import build_batch, simulate_day, to_jsonl
 from generator.catalog import build_catalog
 from generator.config import GeneratorConfig
+from generator.faults import Fault, apply_fault
 from generator.visitors import build_visitor_pool
 from ingest import landing
 
@@ -32,13 +33,14 @@ def run_day(
     *,
     prefix: str = landing.DEFAULT_PREFIX,
     pg_schema: str | None = None,
+    fault: Fault | None = None,
 ) -> DayReport:
     if day < config.epoch:
         raise ValueError(f"{day} is before the start of the simulated world ({config.epoch})")
     catalog = build_catalog(config)
     pool = build_visitor_pool(config)
 
-    rows = build_batch(config, catalog, pool, day)
+    rows = apply_fault(build_batch(config, catalog, pool, day), fault)
     path = landing.landing_path(env, day, prefix)
     landing.write(landing.filesystem(env), path, to_jsonl(rows))
 

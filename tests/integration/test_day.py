@@ -4,7 +4,6 @@ Runs against the real stack but in throwaway resources (Iceberg namespace, landi
 Postgres schema), so it never touches the data that `make day` produced.
 """
 
-import uuid
 from datetime import UTC, date, datetime, time, timedelta
 
 import pytest
@@ -29,17 +28,6 @@ CONFIG = GeneratorConfig(
     bot_sessions_per_day=8,
     utm_start=DAY + timedelta(days=1),
 )
-
-
-@pytest.fixture
-def sandbox(env):
-    suffix = uuid.uuid4().hex[:8]
-    prefix, schema = f"raw/test_{suffix}", f"test_{suffix}"
-    yield prefix, schema
-    fs = landing.filesystem(env)
-    fs.delete_dir_contents(f"{env['S3_BUCKET']}/{prefix}", missing_dir_ok=True)
-    with shop_db.connect(env) as conn:
-        conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
 
 
 def run_and_load(env, catalog, namespace, prefix, schema, day, config=CONFIG):
