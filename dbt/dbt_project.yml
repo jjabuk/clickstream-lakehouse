@@ -24,6 +24,12 @@ vars:
   # dbt_project_evaluator audits the project itself. It is off in a normal build (it would add
   # ~48 models to the warehouse) and switched on by `make dbt-evaluate`.
   enable_project_evaluator: false # read with a default in the config below; also set by the make target
+  # The evaluator audits this project's conventions, not those of installed packages.
+  exclude_packages: ["elementary"]
+  # elementary's anomaly tests train on the days before "now" and test the last ones. Time in the
+  # data is simulated, so "now" is the simulated clock: the end of the latest arrival day loaded
+  # (written by `make day`, passed by make as SIMULATED_NOW). Empty means the wall clock.
+  custom_run_started_at: "{{ env_var('SIMULATED_NOW', '') }}"
 
 models:
   clickstream:
@@ -33,6 +39,10 @@ models:
       +materialized: view
     marts:
       +materialized: table
+
+  elementary:
+    # Test results and run artifacts that `edr report` reads, kept apart from the marts.
+    +schema: elementary
 
   dbt_project_evaluator:
     +enabled: "{{ var('enable_project_evaluator', false) | as_bool }}"
