@@ -39,6 +39,9 @@ models:
       +materialized: view
     marts:
       +materialized: table
+      # Marts are the project's interface: the semantic layer, the dashboard and later Feast read
+      # them (exposures in models/marts/_exposures.yml).
+      +access: public
 
   elementary:
     # Test results and run artifacts that `edr report` reads, kept apart from the marts.

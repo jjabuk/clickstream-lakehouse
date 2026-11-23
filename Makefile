@@ -2,8 +2,8 @@
 
 .PHONY: help setup hooks lint format format-check test check clean \
 	up down ps logs storage-init reset psql-shop psql-platform catalog-init hosts-check bootstrap test-integration day dbt-deps dbt-debug dbt-build dbt-docs dbt-evaluate elementary-report warehouse-shell lint-sql fix-sql \
-	airflow-up airflow-down airflow-check airflow-backfill airflow-day marts-publish evidence-install evidence-dev evidence-validate iceberg-snapshots iceberg-files iceberg-partition iceberg-time-travel iceberg-fragment iceberg-compact iceberg-expire \
-	ci-days ci-replay ci-verify-incremental ci-state ci-mode ci-slim ci-logs
+	airflow-up airflow-down airflow-check airflow-backfill airflow-day metrics-validate metrics-query marts-publish evidence-install evidence-dev evidence-validate iceberg-snapshots iceberg-files iceberg-partition iceberg-time-travel iceberg-fragment iceberg-compact iceberg-expire \
+	ci-days ci-replay ci-verify-incremental ci-metrics ci-state ci-mode ci-slim ci-logs
 
 -include .env
 export
@@ -182,6 +182,18 @@ dbt-docs: .env ## Build and serve the dbt docs with the lineage graph (http://lo
 dbt-evaluate: dbt/dbt_packages ## Audit the dbt project (structure, tests, docs) with dbt_project_evaluator (no stack needed)
 	$(DBT) build $(DBT_ARGS) --target lint --select package:dbt_project_evaluator dbt_project_evaluator_exceptions --vars '{enable_project_evaluator: true}'
 
+# MetricFlow (ADR 0023) reads the semantic manifest that dbt parse writes, and queries the warehouse
+# through the dev profile (from dbt/, so the warehouse path must be absolute).
+MF = cd dbt && DBT_PROFILES_DIR=. DBT_DUCKDB_PATH=$(abspath $(or $(DBT_DUCKDB_PATH),data/warehouse.duckdb)) uv run mf
+
+metrics-validate: .env ## Semantic layer: parse dbt, then check semantic models and metrics against the warehouse
+	uv run dbt parse $(DBT_ARGS) --quiet
+	$(MF) validate-configs
+
+metrics-query: .env ## Semantic layer: make metrics-query METRICS=sessions,checkout_rate [GROUP_BY=metric_time__week,session__device]
+	@test -n "$(METRICS)" || (echo "usage: make metrics-query METRICS=a,b [GROUP_BY=metric_time__day]"; exit 1)
+	$(MF) query --metrics $(METRICS) --group-by $(or $(GROUP_BY),metric_time__day) --order $(firstword $(subst $(comma), ,$(or $(GROUP_BY),metric_time__day)))
+
 marts-publish: .env ## Copy the marts from the DuckDB warehouse to Postgres analytics.marts, which Evidence reads
 	SIMULATED_NOW=$$(cat $(SIM_CLOCK) 2>/dev/null) uv run python -m serving
 
@@ -236,6 +248,10 @@ ci-verify-incremental: .env ## CI: after ci-replay, fail unless a full refresh o
 	cp $(CI_DIR)/warehouse.duckdb $(CI_DIR)/incremental.duckdb
 	$(CI_WAREHOUSE) $(DBT) run $(DBT_ARGS) --full-refresh --select config.materialized:incremental+
 	uv run python ci/compare_warehouses.py $(CI_DIR)/incremental.duckdb $(CI_DIR)/warehouse.duckdb
+
+ci-metrics: .env ## CI: after ci-replay, check the semantic layer against the CI warehouse and Evidence's metrics against it
+	$(MAKE) --no-print-directory metrics-validate DBT_DUCKDB_PATH=$(CI_DIR)/warehouse.duckdb
+	DBT_DUCKDB_PATH=$(CI_DIR)/warehouse.duckdb uv run pytest -q tests/integration/test_metric_definitions.py
 
 ci-state: ## CI: collect the production state (manifest and warehouse) that pull requests defer to
 	rm -rf $(CI_STATE) && mkdir -p $(CI_STATE)

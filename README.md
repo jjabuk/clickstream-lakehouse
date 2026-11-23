@@ -34,6 +34,9 @@ flowchart LR
   on the simulated clock.
 - **Airflow** replays simulated days with backfills. Cosmos runs one `dbt build` in watcher mode,
   because DuckDB has a single writer (ADR 0017).
+- **Semantic layer** in dbt (MetricFlow): metrics are defined once next to the marts, and a test
+  keeps the dashboard's definitions equal to them (ADR 0023). `make metrics-query
+  METRICS=sessions,checkout_rate GROUP_BY=metric_time__week,user__plan`.
 - **Evidence** reads a Postgres copy of the marts, swapped in one transaction after each build
   (ADR 0018).
 
@@ -212,3 +215,5 @@ docs/adr/       architecture decision records
 | [0016](docs/adr/0016-iceberg-table-maintenance-with-pyiceberg.md) | Iceberg maintenance with PyIceberg |
 | [0017](docs/adr/0017-airflow-with-cosmos-watcher-mode.md) | Airflow with Cosmos in watcher mode |
 | [0018](docs/adr/0018-evidence-studio-on-a-postgres-serving-copy.md) | Evidence on a Postgres copy of the marts |
+| [0019](docs/adr/0019-stay-on-dbt-core-1-12-for-now.md) | Stay on dbt Core 1.12 until v2 runs elementary on DuckDB |
+| [0023](docs/adr/0023-semantic-layer-in-dbt-with-metricflow.md) | The semantic layer in dbt (MetricFlow) |

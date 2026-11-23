@@ -132,6 +132,11 @@ unit_tests:
           - {session_id: s1, cookie_id: c1, user_id: 5, user_key: k5, page_number_in_session: 2, occurred_at: '2026-03-01 10:01:00+00', received_at: '2026-03-01 10:01:01+00', page_type: product, device: mobile, country: PL, utm_campaign: spring_sale}
           - {session_id: s1, cookie_id: c1, user_id: 5, user_key: k5, page_number_in_session: 3, occurred_at: '2026-03-01 10:03:00+00', received_at: '2026-03-01 10:03:01+00', page_type: cart, device: mobile, country: PL, utm_campaign: spring_sale}
           - {session_id: s2, cookie_id: c2, user_id: null, user_key: unknown, page_number_in_session: 1, occurred_at: '2026-03-01 12:00:00+00', received_at: '2026-03-01 12:00:01+00', page_type: home, device: desktop, country: DE, utm_campaign: null}
+      # The closed funnel comes from its own model, tested in _intermediate.yml.
+      - input: ref('int_sessions__funnel_steps')
+        rows:
+          - {session_id: s1, reached_product: true, reached_cart: true, reached_checkout: false}
+          - {session_id: s2, reached_product: false, reached_cart: false, reached_checkout: false}
     expect:
       rows:
         - {session_id: s1, page_views: 3, is_bounce: false, entry_page_type: home, exit_page_type: cart, product_views: 1, reached_cart: true, reached_checkout: false, duration_seconds: 180, user_id: 5, utm_campaign: spring_sale}
@@ -149,6 +154,9 @@ unit_tests:
           - {session_id: s3, cookie_id: c3, user_id: null, user_key: unknown, page_number_in_session: 1, occurred_at: '2026-03-01 09:00:00+00', page_type: home, device: desktop, country: PL}
           - {session_id: s3, cookie_id: c3, user_id: 7, user_key: k7_v1, page_number_in_session: 2, occurred_at: '2026-03-01 09:05:00+00', page_type: product, device: mobile, country: DE}
           - {session_id: s3, cookie_id: c3, user_id: 7, user_key: k7_v2, page_number_in_session: 3, occurred_at: '2026-03-01 09:06:00+00', page_type: cart, device: mobile, country: DE}
+      - input: ref('int_sessions__funnel_steps')
+        rows:
+          - {session_id: s3, reached_product: true, reached_cart: true, reached_checkout: false}
     expect:
       rows:
         - {session_id: s3, user_id: 7, user_key: k7_v1, device: desktop, country: PL}

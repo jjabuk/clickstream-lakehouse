@@ -104,6 +104,9 @@ jobs:
       - name: Incremental result equals a full refresh
         if: steps.mode.outputs.mode == 'full'
         run: make ci-verify-incremental
+      - name: Semantic layer, and Evidence's metrics equal to it
+        if: steps.mode.outputs.mode == 'full'
+        run: make ci-metrics
 
       - name: Collect the production state
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'

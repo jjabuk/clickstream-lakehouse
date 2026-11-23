@@ -9,30 +9,45 @@
 -- two builds of the same data disagree): device and country from the entry page view, campaign
 -- and user from the first page view that has one. A visitor who logs in mid-session is attributed
 -- for the whole session; the unknown member stands in when nobody logs in.
+--
+-- The funnel steps are the closed funnel of int_sessions__funnel_steps (cart only after a
+-- product view, checkout only after that cart view), the one definition every mart and the
+-- semantic layer use. A cart page opened straight from an e-mail link is not a cart step.
+
+with sessions as (
+
+    select
+        session_id,
+        any_value(cookie_id) as cookie_id,
+        arg_min(user_id, page_number_in_session) filter (where user_id is not null) as user_id,
+        coalesce(
+            arg_min(user_key, page_number_in_session) filter (where user_id is not null),
+            md5('unknown user')
+        ) as user_key,
+        min(occurred_at) as session_started_at,
+        max(occurred_at) as session_ended_at,
+        cast(strftime(min(occurred_at) at time zone 'UTC', '%Y%m%d') as integer) as date_key,
+        epoch(max(occurred_at)) - epoch(min(occurred_at)) as duration_seconds,
+        count(*) as page_views,
+        count(*) = 1 as is_bounce,
+        arg_min(page_type, page_number_in_session) as entry_page_type,
+        arg_max(page_type, page_number_in_session) as exit_page_type,
+        count(*) filter (where page_type = 'product') as product_views,
+        arg_min(device, page_number_in_session) as device,
+        arg_min(country, page_number_in_session) as country,
+        arg_min(utm_campaign, page_number_in_session) filter (where utm_campaign is not null)
+            as utm_campaign,
+        max(received_at) as last_received_at
+    from {{ ref('fct_page_views') }}
+    group by session_id
+
+)
 
 select
-    session_id,
-    any_value(cookie_id) as cookie_id,
-    arg_min(user_id, page_number_in_session) filter (where user_id is not null) as user_id,
-    coalesce(
-        arg_min(user_key, page_number_in_session) filter (where user_id is not null),
-        md5('unknown user')
-    ) as user_key,
-    min(occurred_at) as session_started_at,
-    max(occurred_at) as session_ended_at,
-    cast(strftime(min(occurred_at) at time zone 'UTC', '%Y%m%d') as integer) as date_key,
-    epoch(max(occurred_at)) - epoch(min(occurred_at)) as duration_seconds,
-    count(*) as page_views,
-    count(*) = 1 as is_bounce,
-    arg_min(page_type, page_number_in_session) as entry_page_type,
-    arg_max(page_type, page_number_in_session) as exit_page_type,
-    count(*) filter (where page_type = 'product') as product_views,
-    bool_or(page_type = 'cart') as reached_cart,
-    bool_or(page_type = 'checkout') as reached_checkout,
-    arg_min(device, page_number_in_session) as device,
-    arg_min(country, page_number_in_session) as country,
-    arg_min(utm_campaign, page_number_in_session) filter (where utm_campaign is not null)
-        as utm_campaign,
-    max(received_at) as last_received_at
-from {{ ref('fct_page_views') }}
-group by session_id
+    sessions.*,
+    steps.reached_product,
+    steps.reached_cart,
+    steps.reached_checkout
+from sessions
+inner join {{ ref('int_sessions__funnel_steps') }} as steps
+    on sessions.session_id = steps.session_id

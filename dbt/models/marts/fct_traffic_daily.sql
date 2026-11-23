@@ -4,6 +4,7 @@
 select
     {{ dbt_utils.generate_surrogate_key(['date_key', 'is_bot']) }} as traffic_key,
     date_key,
+    date_day,
     is_bot,
     count(*) as events,
     count(*) filter (where event_type = 'page_view') as page_view_events,
@@ -11,8 +12,9 @@ select
 from (
     select
         cast(strftime(occurred_at at time zone 'UTC', '%Y%m%d') as integer) as date_key,
+        cast(occurred_at at time zone 'UTC' as date) as date_day,
         is_bot,
         event_type
     from {{ ref('stg_clickstream__events') }}
 ) as events
-group by date_key, is_bot
+group by date_key, date_day, is_bot

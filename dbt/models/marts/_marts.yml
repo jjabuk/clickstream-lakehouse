@@ -28,13 +28,23 @@ models:
             timestamp_column: received_at
           config:
             severity: warn
+    semantic_model:
+      enabled: true
+    agg_time_dimension: occurred_at
     columns:
       - name: event_id
         data_type: varchar
+        description: The event's id from the tracker; one row per page view after deduplication.
+        entity:
+          type: primary
+          name: page_view
         constraints: [{type: not_null}]
         data_tests: [unique, not_null]
       - name: session_id
         data_type: varchar
+        entity:
+          type: foreign
+          name: session
         description: Hash of the visitor's cookie and the session's first page view time.
         constraints: [{type: not_null}]
         data_tests:
@@ -44,6 +54,7 @@ models:
                 field: session_id
       - name: session_started_at
         data_type: timestamp with time zone
+        description: First page view time of the session this view belongs to.
         data_tests: [not_null]
       - name: page_number_in_session
         data_type: bigint
@@ -55,6 +66,9 @@ models:
                 min_value: 1
       - name: cookie_id
         data_type: varchar
+        entity:
+          type: foreign
+          name: visitor
         description: Browser cookie; never null here, because bots are excluded.
         data_tests: [not_null]
       - name: user_id
@@ -62,6 +76,9 @@ models:
         description: Registered user while logged in, otherwise null.
       - name: user_key
         data_type: varchar
+        entity:
+          type: foreign
+          name: user
         description: The user's dimension row valid at `occurred_at`, or the unknown member.
         data_tests:
           - not_null
@@ -71,6 +88,10 @@ models:
                 field: user_key
       - name: occurred_at
         data_type: timestamp with time zone
+        description: When the page view happened, UTC; the client's time, capped at the server's.
+        granularity: hour
+        dimension:
+          type: time
         data_tests: [not_null]
       - name: date_key
         data_type: integer
@@ -83,15 +104,20 @@ models:
                 field: date_key
       - name: received_at
         data_type: timestamp with time zone
+        description: When the first delivery of the event reached the platform, UTC.
         data_tests: [not_null]
       - name: page_type
         data_type: varchar
+        description: home, category, product, cart or checkout.
+        dimension:
+          type: categorical
         data_tests:
           - accepted_values:
               arguments:
                 values: [home, category, product, cart, checkout]
       - name: page_key
         data_type: varchar
+        description: The page in dim_page.
         data_tests:
           - not_null
           - relationships:
@@ -100,19 +126,48 @@ models:
                 field: page_key
       - name: page_url
         data_type: varchar
+        description: Path of the viewed page.
       - name: product_id
         data_type: bigint
+        description: The product of a product page, otherwise null.
       - name: device
         data_type: varchar
+        description: mobile or desktop, from the user agent.
         data_tests:
           - accepted_values:
               arguments:
                 values: [mobile, desktop]
       - name: country
         data_type: varchar
+        description: Country of the visitor from the tracker.
       - name: utm_campaign
         data_type: varchar
         description: Campaign of the session; exists only from the day the tracking was extended.
+    metrics:
+      - name: page_views
+        label: Page views
+        description: Human page views.
+        type: simple
+        agg: count
+        # Every row is a page view. `expr: 1` keeps it a plain COUNT, which conversion metrics
+        # require; a column here compiles to SUM.
+        expr: 1
+      - name: product_viewers
+        label: Visitors who viewed a product
+        description: Distinct cookies with a product page view. Not additive across periods.
+        type: simple
+        # The input of a conversion metric: a plain COUNT_DISTINCT without a filter (MetricFlow
+        # 0.214 cannot resolve filters on conversion inputs), so the page type is in the expr.
+        agg: count_distinct
+        expr: "case when page_type = 'product' then cookie_id end"
+      - name: checkout_viewers
+        label: Visitors who reached checkout
+        description: Distinct cookies with a checkout page view. Not additive across periods.
+        type: simple
+        # The input of a conversion metric: a plain COUNT_DISTINCT without a filter (MetricFlow
+        # 0.214 cannot resolve filters on conversion inputs), so the page type is in the expr.
+        agg: count_distinct
+        expr: "case when page_type = 'checkout' then cookie_id end"
 
   - name: fct_sessions
     description: >
@@ -136,18 +191,34 @@ models:
             expression: sum(page_views)
             compare_model: ref('fct_page_views')
             compare_expression: count(*)
+    semantic_model:
+      enabled: true
+    agg_time_dimension: session_started_at
     columns:
       - name: session_id
         data_type: varchar
+        description: Hash of the visitor's cookie and the session's first page view time.
+        entity:
+          type: primary
+          name: session
         constraints: [{type: not_null}]
         data_tests: [unique, not_null]
       - name: cookie_id
         data_type: varchar
+        description: Browser cookie of the visitor.
+        entity:
+          type: foreign
+          name: visitor
         data_tests: [not_null]
       - name: user_id
         data_type: bigint
+        description: Registered user of the first identified page view, or null if nobody logged in.
       - name: user_key
         data_type: varchar
+        description: The user's dimension version at that page view, or the unknown member.
+        entity:
+          type: foreign
+          name: user
         data_tests:
           - not_null
           - relationships:
@@ -156,9 +227,14 @@ models:
                 field: user_key
       - name: session_started_at
         data_type: timestamp with time zone
+        description: First page view of the session, UTC.
+        granularity: hour
+        dimension:
+          type: time
         data_tests: [not_null]
       - name: session_ended_at
         data_type: timestamp with time zone
+        description: Last page view of the session, UTC.
         data_tests: [not_null]
       - name: date_key
         data_type: integer
@@ -180,31 +256,101 @@ models:
                 max_value: "{{ var('session_context_hours') * 3600 }}"
       - name: page_views
         data_type: bigint
+        description: Page views in the session.
         data_tests:
           - dbt_expectations.expect_column_values_to_be_between:
               arguments:
                 min_value: 1
       - name: is_bounce
         data_type: boolean
+        dimension:
+          type: categorical
         description: True for a session with a single page view.
       - name: entry_page_type
         data_type: varchar
+        description: Page type of the first page view.
+        dimension:
+          type: categorical
       - name: exit_page_type
         data_type: varchar
+        description: Page type of the last page view.
       - name: product_views
         data_type: bigint
-      - name: reached_cart
-        data_type: boolean
-      - name: reached_checkout
-        data_type: boolean
+        description: Product page views in the session.
       - name: device
         data_type: varchar
+        description: Device of the entry page view.
+        dimension:
+          type: categorical
       - name: country
         data_type: varchar
+        description: Country of the entry page view.
+        dimension:
+          type: categorical
       - name: utm_campaign
         data_type: varchar
+        description: Campaign of the first page view that has one, or null.
+        dimension:
+          type: categorical
+          name: campaign
       - name: last_received_at
         data_type: timestamp with time zone
+        description: Latest arrival among the session's page views.
+      - name: reached_product
+        data_type: boolean
+        description: The session viewed a product (first step of the closed funnel).
+        data_tests: [not_null]
+      - name: reached_cart
+        data_type: boolean
+        description: The session viewed the cart after a product view.
+        data_tests: [not_null]
+      - name: reached_checkout
+        data_type: boolean
+        description: The session viewed the checkout after a cart view that followed a product view.
+        data_tests: [not_null]
+    metrics:
+      - name: sessions
+        label: Sessions
+        description: Human sessions (bots never reach the marts).
+        type: simple
+        agg: count
+        expr: session_id
+      - name: visitors
+        label: Visitors
+        description: Distinct cookies. Not additive across days or devices.
+        type: simple
+        agg: count_distinct
+        expr: cookie_id
+      - name: bounced_sessions
+        label: Bounced sessions
+        type: simple
+        agg: sum_boolean
+        expr: is_bounce
+      - name: product_sessions
+        label: Sessions with a product view
+        type: simple
+        agg: sum_boolean
+        expr: reached_product
+      - name: cart_sessions
+        label: Sessions that reached the cart
+        type: simple
+        agg: sum_boolean
+        expr: reached_cart
+      - name: checkout_sessions
+        label: Sessions that reached checkout
+        type: simple
+        agg: sum_boolean
+        expr: reached_checkout
+      - name: session_page_views
+        label: Page views in sessions
+        type: simple
+        agg: sum
+        expr: page_views
+      - name: avg_session_duration_seconds
+        label: Average session duration (s)
+        type: simple
+        agg: average
+        expr: duration_seconds
 
   - name: dim_user
     description: >
@@ -224,30 +370,46 @@ models:
             combination_of_columns: [user_id]
           config:
             where: "is_current and user_id is not null"
+    semantic_model:
+      enabled: true
     columns:
       - name: user_key
         data_type: varchar
+        description: Surrogate key of this version (the snapshot's scd id); facts point here.
+        entity:
+          type: primary
+          name: user
         constraints: [{type: not_null}]
         data_tests: [unique, not_null]
       - name: user_id
         data_type: bigint
+        description: The shop's user id; null for the unknown member.
       - name: country
         data_type: varchar
+        description: Country of the user in this version.
+        dimension:
+          type: categorical
         data_tests: [not_null]
       - name: plan
         data_type: varchar
+        description: free or premium in this version; unknown for the unknown member.
+        dimension:
+          type: categorical
         data_tests:
           - accepted_values:
               arguments:
                 values: [free, premium, unknown]
       - name: effective_from
         data_type: timestamp with time zone
+        description: Start of the version; the first version reaches back to 1900.
         data_tests: [not_null]
       - name: effective_to
         data_type: timestamp with time zone
+        description: End of the version, exclusive; 9999-12-31 for the current one.
         data_tests: [not_null]
       - name: is_current
         data_type: boolean
+        description: True for the version valid now.
 
   - name: dim_page
     description: >
@@ -259,29 +421,37 @@ models:
     columns:
       - name: page_key
         data_type: varchar
+        description: Surrogate key of the page URL.
         constraints: [{type: not_null}]
         data_tests: [unique, not_null]
       - name: page_url
         data_type: varchar
+        description: Path of the page.
         data_tests: [unique, not_null]
       - name: page_type
         data_type: varchar
+        description: home, category, product, cart or checkout.
         data_tests:
           - accepted_values:
               arguments:
                 values: [home, category, product, cart, checkout]
       - name: category_id
         data_type: integer
+        description: Category of a category or product page, otherwise null.
       - name: category_slug
         data_type: varchar
+        description: URL slug of that category.
       - name: product_id
         data_type: integer
+        description: Product of a product page, otherwise null.
 
   - name: dim_date
     description: "Grain: one calendar day in UTC (`date_key`), from the start of the simulated world."
     config:
       contract:
         enforced: true
+    time_spine:
+      standard_granularity_column: date_day
     columns:
       - name: date_key
         data_type: integer
@@ -290,24 +460,33 @@ models:
         data_tests: [unique, not_null]
       - name: date_day
         data_type: date
+        description: The calendar day; also the semantic layer's daily time spine.
+        granularity: day
         data_tests: [unique, not_null]
       - name: calendar_year
         data_type: bigint
+        description: Calendar year.
       - name: calendar_month
         data_type: bigint
+        description: Month of the year, 1 to 12.
       - name: day_of_month
         data_type: bigint
+        description: Day of the month, 1 to 31.
       - name: iso_year
         data_type: bigint
+        description: ISO 8601 week-numbering year.
       - name: iso_week
         data_type: bigint
+        description: ISO 8601 week number.
       - name: day_of_week
         data_type: bigint
         description: ISO day of week, Monday = 1.
       - name: is_weekend
         data_type: boolean
+        description: Saturday or Sunday.
       - name: week_start_date
         data_type: date
+        description: Monday of the ISO week.
 
   - name: fct_funnel_daily
     description: >
@@ -332,10 +511,12 @@ models:
     columns:
       - name: funnel_key
         data_type: varchar
+        description: Surrogate key of day, device and campaign.
         constraints: [{type: not_null}]
         data_tests: [unique, not_null]
       - name: date_key
         data_type: integer
+        description: Day of the session start as yyyymmdd.
         data_tests:
           - not_null
           - relationships:
@@ -344,6 +525,7 @@ models:
                 field: date_key
       - name: device
         data_type: varchar
+        description: Device of the sessions.
         data_tests: [not_null]
       - name: utm_campaign
         data_type: varchar
@@ -351,11 +533,13 @@ models:
         data_tests: [not_null]
       - name: sessions
         data_type: bigint
+        description: Human sessions.
       - name: bounced_sessions
         data_type: bigint
         description: Sessions with a single page view; bounce rate = bounced_sessions / sessions.
       - name: product_sessions
         data_type: bigint
+        description: Sessions that viewed a product (first funnel step).
       - name: cart_sessions
         data_type: bigint
         description: Sessions that reached the cart after a product view.
@@ -381,6 +565,7 @@ models:
     columns:
       - name: retention_key
         data_type: varchar
+        description: Surrogate key of cohort week and activity week.
         constraints: [{type: not_null}]
         data_tests: [unique, not_null]
       - name: cohort_week
@@ -389,13 +574,17 @@ models:
         data_tests: [not_null]
       - name: activity_week
         data_type: date
+        description: Monday of the week the visitors were active in.
         data_tests: [not_null]
       - name: weeks_since_first_visit
         data_type: integer
+        description: Whole weeks between the cohort week and the activity week.
       - name: cohort_visitors
         data_type: bigint
+        description: Visitors in the cohort; repeated on every row of the cohort.
       - name: active_visitors
         data_type: bigint
+        description: Cohort visitors with a page view in the activity week.
 
   - name: fct_traffic_daily
     description: >
@@ -408,20 +597,54 @@ models:
       - dbt_utils.unique_combination_of_columns:
           arguments:
             combination_of_columns: [date_key, is_bot]
+    semantic_model:
+      enabled: true
+    agg_time_dimension: date_day
     columns:
       - name: traffic_key
         data_type: varchar
+        description: Surrogate key of day and traffic type.
+        entity:
+          type: primary
+          name: traffic_day
         constraints: [{type: not_null}]
         data_tests: [unique, not_null]
       - name: date_key
         data_type: integer
+        description: Day of the events as yyyymmdd.
+        data_tests: [not_null]
+      - name: date_day
+        data_type: date
+        description: UTC date of the event, the same day as `date_key`.
+        granularity: day
+        dimension:
+          type: time
         data_tests: [not_null]
       - name: is_bot
         data_type: boolean
+        description: True for bot traffic (no cookie or a bot user agent).
+        dimension:
+          type: categorical
         data_tests: [not_null]
       - name: events
         data_type: bigint
+        description: Deduplicated events of all types.
       - name: page_view_events
         data_type: bigint
+        description: Deduplicated page views.
       - name: add_to_cart_events
         data_type: bigint
+        description: Deduplicated add-to-cart events.
+    metrics:
+      - name: events
+        label: Events
+        description: Deduplicated events of humans and bots.
+        type: simple
+        agg: sum
+        expr: events
+      - name: bot_events
+        label: Bot events
+        type: simple
+        agg: sum
+        expr: events
+        filter: "{{ Dimension('traffic_day__is_bot') }}"

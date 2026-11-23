@@ -1,0 +1,68 @@
+version: 2
+
+# Metrics built from the simple metrics of the semantic models in _marts.yml (ADR 0023). Every
+# rate is a ratio of two sums, so it stays correct at any grain and filter; Evidence uses the same
+# formulas and an integration test compares the two.
+metrics:
+  - name: bounce_rate
+    label: Bounce rate
+    description: Share of sessions with a single page view.
+    type: ratio
+    numerator: bounced_sessions
+    denominator: sessions
+
+  - name: product_rate
+    label: Reached a product
+    description: Share of sessions that viewed a product (closed funnel, step 1).
+    type: ratio
+    numerator: product_sessions
+    denominator: sessions
+
+  - name: cart_rate
+    label: Added to cart
+    description: Share of sessions that reached the cart after a product view (step 2).
+    type: ratio
+    numerator: cart_sessions
+    denominator: sessions
+
+  - name: checkout_rate
+    label: Reached checkout
+    description: Share of sessions that reached checkout through the funnel (step 3).
+    type: ratio
+    numerator: checkout_sessions
+    denominator: sessions
+
+  - name: cart_to_checkout_rate
+    label: Cart to checkout
+    description: Of the sessions that reached the cart, the share that went on to checkout.
+    type: ratio
+    numerator: checkout_sessions
+    denominator: cart_sessions
+
+  - name: pages_per_session
+    label: Pages per session
+    type: ratio
+    numerator: session_page_views
+    denominator: sessions
+
+  - name: bot_share
+    label: Bot share of events
+    description: What bot filtering removes before the other marts.
+    type: ratio
+    numerator: bot_events
+    denominator: events
+
+  - name: visitor_product_to_checkout_7d
+    label: Product view to checkout within 7 days (visitor)
+    description: >
+      Of the visitors who viewed a product in the period, the share that reached a checkout page
+      within 7 days, in the same session or a later one, which session rates cannot see. A
+      checkout is credited to the visitor's last product view before it, so a visitor who views
+      products in two weeks and buys in the second counts as converted in the second only.
+    type: conversion
+    entity: visitor
+    calculation: conversion_rate
+    # Distinct visitors on both sides, so the rate is per visitor, not per page view.
+    base_metric: product_viewers
+    conversion_metric: checkout_viewers
+    window: 7 days

@@ -9,6 +9,8 @@ from psycopg import sql
 
 from serving.publish import READER, _dsn, publish
 
+pytestmark = pytest.mark.integration
+
 
 @pytest.fixture
 def database(env):

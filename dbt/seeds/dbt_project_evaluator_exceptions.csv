@@ -4,3 +4,4 @@ fct_sources_without_freshness,resource_name,clickstream.events,time in the data 
 fct_sources_without_freshness,resource_name,shop.users,time in the data is simulated so freshness against the wall clock is meaningless
 fct_sources_without_freshness,resource_name,shop.products,time in the data is simulated so freshness against the wall clock is meaningless
 fct_sources_without_freshness,resource_name,shop.categories,time in the data is simulated so freshness against the wall clock is meaningless
+fct_rejoining_of_upstream_concepts,parent_and_child,int_sessions__funnel_steps,the closed funnel is its own model so its ordering rule has a unit test; fct_sessions joins it back to the page views on purpose

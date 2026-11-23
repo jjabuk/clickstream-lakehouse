@@ -1,0 +1,52 @@
+version: 2
+
+# The Evidence pages (evidence/pages) and what they read. Evidence reads a Postgres copy of the
+# marts (ADR 0018), so these exposures end the lineage at the dashboard.
+exposures:
+  - name: evidence_overview
+    label: Dashboard overview
+    type: dashboard
+    maturity: medium
+    url: http://localhost:3000/
+    description: Sessions, bounce, checkout rate and bot share; the last publish.
+    depends_on:
+      - ref('fct_funnel_daily')
+      - ref('fct_traffic_daily')
+      - ref('dim_date')
+    owner:
+      name: clickstream-lakehouse
+
+  - name: evidence_funnel
+    label: Funnel
+    type: dashboard
+    maturity: medium
+    url: http://localhost:3000/funnel
+    description: The closed funnel by device and campaign.
+    depends_on:
+      - ref('fct_funnel_daily')
+      - ref('dim_date')
+    owner:
+      name: clickstream-lakehouse
+
+  - name: evidence_retention
+    label: Retention
+    type: dashboard
+    maturity: medium
+    url: http://localhost:3000/retention
+    description: Weekly cohorts by first visit.
+    depends_on:
+      - ref('fct_retention_weekly')
+    owner:
+      name: clickstream-lakehouse
+
+  - name: evidence_traffic
+    label: Traffic
+    type: dashboard
+    maturity: medium
+    url: http://localhost:3000/traffic
+    description: Events of humans and bots.
+    depends_on:
+      - ref('fct_traffic_daily')
+      - ref('dim_date')
+    owner:
+      name: clickstream-lakehouse
