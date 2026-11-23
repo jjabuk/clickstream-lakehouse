@@ -3,13 +3,13 @@
 import uuid
 from pathlib import Path
 
-import duckdb
 import pytest
 from pyiceberg.catalog import Catalog
 
 from generator import shop_db
 from ingest import landing
 from ingest.bronze import lakehouse_catalog
+from ingest.reader import lakehouse_duckdb
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -63,18 +63,6 @@ def namespace(catalog: Catalog):
 @pytest.fixture
 def duck(env: dict[str, str]):
     """DuckDB attached to the catalog with its own S3 key (no vended credentials, ADR 0003)."""
-    con = duckdb.connect()
-    con.execute("INSTALL iceberg; INSTALL httpfs; LOAD iceberg; LOAD httpfs;")
-    endpoint = env["S3_ENDPOINT"].removeprefix("http://")
-    con.execute(
-        f"""CREATE SECRET s3 (
-            TYPE s3, KEY_ID '{env["S3_ACCESS_KEY_ID"]}', SECRET '{env["S3_SECRET_ACCESS_KEY"]}',
-            ENDPOINT '{endpoint}', URL_STYLE 'path', USE_SSL false, REGION '{env["S3_REGION"]}')"""
-    )
-    con.execute(
-        """ATTACH 'lakehouse' AS lk (
-            TYPE iceberg, URI 'http://localhost:8181/catalog',
-            AUTHORIZATION_TYPE none, ACCESS_DELEGATION_MODE 'none')"""
-    )
+    con = lakehouse_duckdb(env, read_only=False)  # test_stack also writes through DuckDB
     yield con
     con.close()

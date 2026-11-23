@@ -128,7 +128,7 @@ def ensure_table(catalog: Catalog, namespace: str = NAMESPACE) -> Table:
     return table
 
 
-def _arrival_day(day: date):
+def arrival_day_filter(day: date):
     start = datetime.combine(day, time.min, tzinfo=UTC)
     return And(
         GreaterThanOrEqual("server_ts", start.isoformat()),
@@ -222,7 +222,7 @@ def load_day(
         and pc.max(data["server_ts"]).as_py() < start + timedelta(days=1)
     ):
         raise ValueError(f"{path} holds rows outside arrival day {day}")
-    in_day = _arrival_day(day)
+    in_day = arrival_day_filter(day)
 
     # Write: to a fresh branch made from the current main. A branch left by an earlier failed
     # audit was made from an older main, so it is replaced, not reused.

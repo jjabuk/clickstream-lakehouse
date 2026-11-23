@@ -2,6 +2,7 @@
 
 .PHONY: help setup hooks lint format format-check test check clean \
 	up down ps logs storage-init reset psql-shop psql-platform catalog-init hosts-check bootstrap test-integration day dbt-deps dbt-debug dbt-build dbt-docs dbt-evaluate elementary-report warehouse-shell lint-sql fix-sql \
+	airflow-up airflow-down airflow-check airflow-backfill airflow-day iceberg-snapshots iceberg-files iceberg-partition iceberg-time-travel iceberg-fragment iceberg-compact iceberg-expire \
 	ci-days ci-replay ci-verify-incremental ci-state ci-mode ci-slim ci-logs
 
 -include .env
@@ -64,11 +65,11 @@ clean: ## Remove caches
 up: .env ## Start the local stack and wait until it is healthy
 	$(COMPOSE) up -d --wait
 
-down: ## Stop the stack (data volumes are kept)
-	$(COMPOSE) down
+down: ## Stop the stack, Airflow included (data volumes are kept)
+	$(COMPOSE) --profile airflow down
 
 ps: ## Show service status
-	$(COMPOSE) ps
+	$(COMPOSE) --profile airflow ps
 
 logs: ## Tail logs (SERVICE=name for one service)
 	$(COMPOSE) logs -f --tail=100 $(SERVICE)
@@ -93,12 +94,66 @@ psql-platform: .env ## Open psql in the platform instance (Lakekeeper catalog)
 	$(COMPOSE) exec postgres-platform sh -c 'psql -U "$$POSTGRES_USER" -d lakekeeper'
 
 SEED ?= 42
+comma := ,
 
 day: .env ## Generate one day and load it through write-audit-publish: make day DATE=2026-01-10 [SEED=42] [FAULT=truncated|duplicated|bad_event_type]
 	@test -n "$(DATE)" || { echo "usage: make day DATE=YYYY-MM-DD [SEED=42] [FAULT=...]"; exit 1; }
 	uv run python -m generator --date $(DATE) --seed $(SEED) $(if $(FAULT),--fault $(FAULT))
 	uv run python -m ingest --date $(DATE)
 	@python3 ci/advance_clock.py $(DATE) $(SIM_CLOCK)
+
+# --- Iceberg operations on bronze (ADR 0016) ---------------------------------------------------
+ICEBERG := uv run python -m ingest.maintenance
+
+iceberg-snapshots: .env ## Iceberg: main's snapshots (oldest first) and the refs of bronze
+	$(ICEBERG) snapshots
+
+iceberg-files: .env ## Iceberg: live data files of bronze per arrival day and partition spec
+	$(ICEBERG) files
+
+iceberg-partition: .env ## Iceberg: evolve the partitioning of bronze, metadata only: make iceberg-partition GRAIN=hour|day
+	@test -n "$(GRAIN)" || { echo "usage: make iceberg-partition GRAIN=hour|day"; exit 1; }
+	$(ICEBERG) partition --grain $(GRAIN)
+
+iceberg-time-travel: .env ## Iceberg: a day's events before and after later days brought its late ones: make iceberg-time-travel DAY=2026-02-05
+	@test -n "$(DAY)" || { echo "usage: make iceberg-time-travel DAY=YYYY-MM-DD"; exit 1; }
+	$(ICEBERG) time-travel --day $(DAY)
+
+iceberg-fragment: .env ## Iceberg: rewrite a day as many small files, like a streaming sink (demo for compaction): make iceberg-fragment DAY=... [PARTS=24]
+	@test -n "$(DAY)" || { echo "usage: make iceberg-fragment DAY=YYYY-MM-DD [PARTS=24]"; exit 1; }
+	$(ICEBERG) fragment --day $(DAY) --parts $(or $(PARTS),24)
+
+iceberg-compact: .env ## Iceberg: merge the files of fragmented days (or DAY=... only)
+	$(ICEBERG) compact $(if $(DAY),--day $(DAY))
+
+iceberg-expire: .env ## Iceberg: expire all but the newest KEEP snapshots of main (default 5); ends time travel to them
+	$(ICEBERG) expire --keep $(or $(KEEP),5)
+
+# --- Airflow (ADR 0017) ----------------------------------------------------------------------
+# A compose profile, so `make up`, the tests and CI run without it.
+AIRFLOW = $(COMPOSE) --profile airflow
+AIRFLOW_CLI = $(AIRFLOW) exec airflow-scheduler airflow
+
+airflow-up: .env dbt/dbt_packages ## Airflow: build the image and start it on the running stack (UI on http://localhost:8088)
+	$(AIRFLOW) up -d --build --wait
+
+airflow-down: ## Airflow: stop its services, keep the rest of the stack
+	$(AIRFLOW) stop airflow-api-server airflow-scheduler airflow-dag-processor airflow-triggerer
+
+airflow-check: ## Airflow: fail if a DAG does not import
+	@$(AIRFLOW_CLI) dags list-import-errors -o plain | tee /dev/stderr | grep -q "No data found"
+
+airflow-backfill: ## Airflow: replay arrival days FROM..TO, one after another: make airflow-backfill FROM=2026-02-08 TO=2026-02-10
+	@test -n "$(FROM)" -a -n "$(TO)" || { echo "usage: make airflow-backfill FROM=YYYY-MM-DD TO=YYYY-MM-DD"; exit 1; }
+	@# A paused DAG queues backfill runs without starting them; scheduled runs are skipped by the DAG.
+	$(AIRFLOW_CLI) dags unpause --yes clickstream_daily
+	$(AIRFLOW_CLI) backfill create --dag-id clickstream_daily --from-date $(FROM) --to-date $(TO) --max-active-runs 1 --reprocess-behavior failed
+
+airflow-day: ## Airflow: run one arrival day by hand: make airflow-day DAY=2026-02-11 [FAULT=truncated|duplicated|bad_event_type] (a retry redelivers it fixed)
+	@test -n "$(DAY)" || { echo "usage: make airflow-day DAY=YYYY-MM-DD [FAULT=...]"; exit 1; }
+	$(AIRFLOW_CLI) dags unpause --yes clickstream_daily
+	$(AIRFLOW_CLI) dags trigger clickstream_daily --logical-date $(DAY)T00:00:00+00:00 \
+		--conf '{"day": "$(DAY)"$(if $(FAULT),$(comma) "fault": "$(FAULT)")}'
 
 dbt-deps: ## Install the dbt packages (versions pinned in dbt/packages.yml)
 	$(DBT) deps $(DBT_ARGS)
@@ -182,4 +237,4 @@ ci-logs: .env ## CI: print the last lines of every service log (no follow, for f
 	$(COMPOSE) logs --no-color --tail=200
 
 reset: .env ## Stop the stack and DELETE all data volumes
-	$(COMPOSE) down -v
+	$(COMPOSE) --profile airflow down -v

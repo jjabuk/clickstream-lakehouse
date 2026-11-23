@@ -87,8 +87,6 @@ services:
     command: ["serve"]
     environment:
       <<: *lakekeeper-env
-      # Links that Lakekeeper hands to clients must work from the host.
-      LAKEKEEPER__BASE_URI: http://localhost:8181
     depends_on:
       lakekeeper-migrate:
         condition: service_completed_successfully
@@ -103,7 +101,122 @@ services:
       retries: 12
       start_period: 5s
 
+  # --- Airflow (ADR 0017), only with `--profile airflow` (make airflow-up) --------------------
+  # Its metadata database is `airflow` on postgres-platform (ADR 0011), created here because
+  # the instance's init scripts run only on an empty volume.
+  airflow-db-init:
+    image: postgres:18.7
+    profiles: [airflow]
+    restart: "no"
+    environment:
+      PGHOST: postgres-platform
+      PGUSER: ${PLATFORM_POSTGRES_USER}
+      PGPASSWORD: ${PLATFORM_POSTGRES_PASSWORD}
+      PGDATABASE: lakekeeper
+    command:
+      - sh
+      - -c
+      - psql -tAc "SELECT 1 FROM pg_database WHERE datname = 'airflow'" | grep -q 1
+        || psql -c "CREATE DATABASE airflow"
+    depends_on:
+      postgres-platform:
+        condition: service_healthy
+
+  airflow-init:
+    &airflow
+    build:
+      context: ..
+      dockerfile: infra/airflow/Dockerfile
+    image: clickstream-lakehouse/airflow:3.4.0
+    profiles: [airflow]
+    restart: "no"
+    command: ["db", "migrate"]
+    # The project's .env (S3 key, Postgres users), then what differs inside the network.
+    env_file: ../.env
+    environment: &airflow-env
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${PLATFORM_POSTGRES_USER}:${PLATFORM_POSTGRES_PASSWORD}@postgres-platform:5432/airflow
+      AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-api-server:8080/execution/
+      AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_JWT_SECRET:-dev-only-airflow-jwt-secret}
+      # Local only: no login, everyone is an admin.
+      AIRFLOW__CORE__AUTH_MANAGER: airflow.api_fastapi.auth.managers.simple.simple_auth_manager.SimpleAuthManager
+      AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_ALL_ADMINS: "true"
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__DAGS_FOLDER: /opt/project/airflow/dags
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+      PROJECT_DIR: /opt/project
+      PROJECT_PYTHON: /opt/project-venv/bin/python
+      DBT_EXECUTABLE: /opt/project-venv/bin/dbt
+      DBT_DUCKDB_PATH: /opt/project/data/warehouse.duckdb
+      LAKEKEEPER_URL: http://lakekeeper:8181
+      SHOP_POSTGRES_HOST: postgres-shop
+      SHOP_POSTGRES_PORT: "5432"
+    volumes:
+      - ..:/opt/project
+      - airflow-logs:/opt/airflow/logs
+    depends_on:
+      airflow-db-init:
+        condition: service_completed_successfully
+
+  airflow-api-server:
+    <<: *airflow
+    restart: unless-stopped
+    command: ["api-server"]
+    ports:
+      - "127.0.0.1:8088:8080" # 8080 is taken by `make dbt-docs`
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:8080/api/v2/version"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    depends_on: &airflow-depends
+      airflow-init:
+        condition: service_completed_successfully
+      lakekeeper:
+        condition: service_healthy
+      postgres-shop:
+        condition: service_healthy
+
+  airflow-scheduler:
+    <<: *airflow
+    restart: unless-stopped
+    command: ["scheduler"]
+    healthcheck:
+      test: ["CMD", "airflow", "jobs", "check", "--job-type", "SchedulerJob", "--local"]
+      interval: 15s
+      timeout: 10s
+      retries: 8
+      start_period: 30s
+    depends_on: *airflow-depends
+
+  airflow-dag-processor:
+    <<: *airflow
+    restart: unless-stopped
+    command: ["dag-processor"]
+    healthcheck:
+      test: ["CMD", "airflow", "jobs", "check", "--job-type", "DagProcessorJob", "--local"]
+      interval: 15s
+      timeout: 10s
+      retries: 8
+      start_period: 30s
+    depends_on: *airflow-depends
+
+  # Cosmos's watcher sensors defer to it while dbt builds.
+  airflow-triggerer:
+    <<: *airflow
+    restart: unless-stopped
+    command: ["triggerer"]
+    healthcheck:
+      test: ["CMD", "airflow", "jobs", "check", "--job-type", "TriggererJob", "--local"]
+      interval: 15s
+      timeout: 10s
+      retries: 8
+      start_period: 30s
+    depends_on: *airflow-depends
+
 volumes:
+  airflow-logs:
   garage-meta:
   garage-data:
   postgres-shop-data:
