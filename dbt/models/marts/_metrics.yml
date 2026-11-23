@@ -55,14 +55,9 @@ metrics:
   - name: visitor_product_to_checkout_7d
     label: Product view to checkout within 7 days (visitor)
     description: >
-      Of the visitors who viewed a product in the period, the share that reached a checkout page
-      within 7 days, in the same session or a later one, which session rates cannot see. A
-      checkout is credited to the visitor's last product view before it, so a visitor who views
-      products in two weeks and buys in the second counts as converted in the second only.
-    type: conversion
-    entity: visitor
-    calculation: conversion_rate
-    # Distinct visitors on both sides, so the rate is per visitor, not per page view.
-    base_metric: product_viewers
-    conversion_metric: checkout_viewers
-    window: 7 days
+      Of the visitors who viewed a product on a day, the share that reached a checkout page within
+      7 days, in the same session or a later one, which session rates cannot see. Filter on
+      `visitor_day__is_window_complete`: the last 7 days of data can still convert.
+    type: ratio
+    numerator: converted_viewer_days
+    denominator: product_viewer_days

@@ -1,0 +1,32 @@
+# Visitor conversion across sessions: of the visitors who viewed a product on a day, the share
+# that reached checkout within 7 days. The same definition as the dbt metric
+# visitor_product_to_checkout_7d (ADR 0023); tests/integration/test_metric_definitions.py keeps
+# them equal. Rows whose 7-day window is still open can still convert: pages filter them out.
+# product_week is text, so Evidence does not re-bucket it into Sunday weeks; the cast works in
+# Postgres and in DuckDB, where the consistency test runs the same SQL.
+base_sql: >
+  select product_day,
+         cast(cast(date_trunc('week', product_day) as date) as text) as product_week,
+         device, is_window_complete, is_converted_7d
+  from marts.fct_visitor_conversion_daily
+date: product_day
+default_date_grain: week
+dimensions:
+  # ISO week (Monday), as in the retention mart; Evidence's own week grain starts on Sunday.
+  week: product_week
+  device: device
+  window_complete: is_window_complete
+metrics:
+  product_viewer_days:
+    sql: count(*)
+    fmt: num0
+    label: Visitors with a product view
+    description: Visitor-days with a product view
+  converted_viewer_days:
+    sql: sum(case when is_converted_7d then 1 else 0 end)
+    fmt: num0
+    label: Reached checkout within 7 days
+  visitor_conversion_7d:
+    sql: "{converted_viewer_days} * 1.0 / nullif({product_viewer_days}, 0)"
+    fmt: pct1
+    label: Product view to checkout in 7 days

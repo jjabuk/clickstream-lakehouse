@@ -179,3 +179,27 @@ unit_tests:
         - {user_key: v2, user_id: 1, country: DE, plan: free, effective_from: '2026-02-10 00:00:00+00', effective_to: '9999-12-31 00:00:00+00', is_current: true}
         - {user_key: v3, user_id: 2, country: FR, plan: premium, effective_from: '1900-01-01 00:00:00+00', effective_to: '9999-12-31 00:00:00+00', is_current: true}
         - {user_key: ab623e1f8d51d01aeef17b147ac104c1, user_id: null, country: unknown, plan: unknown, effective_from: '1900-01-01 00:00:00+00', effective_to: '9999-12-31 00:00:00+00', is_current: true}
+
+  # ---- visitor conversion -----------------------------------------------------------------------
+  - name: fct_visitor_conversion_daily__window_and_censoring
+    description: >
+      c1 views a product and checks out 3 days later in another session: converted. c2 checks out
+      before the product view and again 8 days after it: neither is inside the window. c3 views a
+      product 2 days before the end of the data: not converted yet, and its window is still open.
+    model: fct_visitor_conversion_daily
+    given:
+      - input: ref('fct_page_views')
+        rows:
+          - {cookie_id: c1, page_type: product, device: mobile, occurred_at: '2026-02-01 10:00:00+00'}
+          - {cookie_id: c1, page_type: product, device: desktop, occurred_at: '2026-02-01 18:00:00+00'}
+          - {cookie_id: c1, page_type: checkout, device: desktop, occurred_at: '2026-02-04 09:00:00+00'}
+          - {cookie_id: c2, page_type: checkout, device: mobile, occurred_at: '2026-02-01 09:00:00+00'}
+          - {cookie_id: c2, page_type: product, device: mobile, occurred_at: '2026-02-01 12:00:00+00'}
+          - {cookie_id: c2, page_type: checkout, device: mobile, occurred_at: '2026-02-09 12:00:01+00'}
+          - {cookie_id: c3, page_type: product, device: desktop, occurred_at: '2026-02-08 12:00:00+00'}
+          - {cookie_id: c9, page_type: home, device: desktop, occurred_at: '2026-02-10 12:00:00+00'}
+    expect:
+      rows:
+        - {cookie_id: c1, product_day: '2026-02-01', device: mobile, is_converted_7d: true, converted_at: '2026-02-04 09:00:00+00', is_window_complete: true}
+        - {cookie_id: c2, product_day: '2026-02-01', device: mobile, is_converted_7d: false, converted_at: null, is_window_complete: true}
+        - {cookie_id: c3, product_day: '2026-02-08', device: desktop, is_converted_7d: false, converted_at: null, is_window_complete: false}

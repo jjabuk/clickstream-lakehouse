@@ -21,9 +21,10 @@ exposures:
     type: dashboard
     maturity: medium
     url: http://localhost:3000/funnel
-    description: The closed funnel by device and campaign.
+    description: The closed funnel by device and campaign, and visitor conversion across sessions.
     depends_on:
       - ref('fct_funnel_daily')
+      - ref('fct_visitor_conversion_daily')
       - ref('dim_date')
     owner:
       name: clickstream-lakehouse

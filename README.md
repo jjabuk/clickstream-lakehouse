@@ -52,6 +52,7 @@ dbt project to Databricks.
 | `fct_funnel_daily` | day × device × campaign; counts of the ordered steps product → cart → checkout |
 | `fct_retention_weekly` | cohort week × activity week, cohorts by first visit |
 | `fct_traffic_daily` | day × human/bot; what bot filtering removes |
+| `fct_visitor_conversion_daily` | visitor × day with a product view; checkout within 7 days in any session, with a flag for windows still open |
 | `dim_user` | one version of a registered user (SCD2), plus an "unknown" member |
 | `dim_page`, `dim_date` | one page URL; one calendar day |
 

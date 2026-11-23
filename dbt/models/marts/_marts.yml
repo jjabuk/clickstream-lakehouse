@@ -149,25 +149,7 @@ models:
         description: Human page views.
         type: simple
         agg: count
-        # Every row is a page view. `expr: 1` keeps it a plain COUNT, which conversion metrics
-        # require; a column here compiles to SUM.
         expr: 1
-      - name: product_viewers
-        label: Visitors who viewed a product
-        description: Distinct cookies with a product page view. Not additive across periods.
-        type: simple
-        # The input of a conversion metric: a plain COUNT_DISTINCT without a filter (MetricFlow
-        # 0.214 cannot resolve filters on conversion inputs), so the page type is in the expr.
-        agg: count_distinct
-        expr: "case when page_type = 'product' then cookie_id end"
-      - name: checkout_viewers
-        label: Visitors who reached checkout
-        description: Distinct cookies with a checkout page view. Not additive across periods.
-        type: simple
-        # The input of a conversion metric: a plain COUNT_DISTINCT without a filter (MetricFlow
-        # 0.214 cannot resolve filters on conversion inputs), so the page type is in the expr.
-        agg: count_distinct
-        expr: "case when page_type = 'checkout' then cookie_id end"
 
   - name: fct_sessions
     description: >
@@ -648,3 +630,91 @@ models:
         agg: sum
         expr: events
         filter: "{{ Dimension('traffic_day__is_bot') }}"
+
+  - name: fct_visitor_conversion_daily
+    description: >
+      Grain: one visitor (cookie) × day with a product view (`visitor_day_key`). Whether the
+      visitor reached a checkout page within 7 days after their first product view of that day,
+      in the same session or a later one. Rows whose 7-day window is still open
+      (`is_window_complete` false) can still convert and belong out of rates.
+    config:
+      contract:
+        enforced: true
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [cookie_id, product_day]
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "converted_at is null or converted_at > product_viewed_at"
+    semantic_model:
+      enabled: true
+    agg_time_dimension: product_viewed_at
+    columns:
+      - name: visitor_day_key
+        data_type: varchar
+        description: Surrogate key of cookie and day.
+        entity:
+          type: primary
+          name: visitor_day
+        constraints: [{type: not_null}]
+        data_tests: [unique, not_null]
+      - name: cookie_id
+        data_type: varchar
+        description: Browser cookie of the visitor.
+        entity:
+          type: foreign
+          name: visitor
+        data_tests: [not_null]
+      - name: date_key
+        data_type: integer
+        description: The product view day as yyyymmdd.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_date')
+                field: date_key
+      - name: product_day
+        data_type: date
+        description: UTC day of the product views.
+        data_tests: [not_null]
+      - name: product_viewed_at
+        data_type: timestamp with time zone
+        description: The visitor's first product view of the day; the 7-day window starts here.
+        granularity: hour
+        dimension:
+          type: time
+        data_tests: [not_null]
+      - name: device
+        data_type: varchar
+        description: Device of that first product view.
+        dimension:
+          type: categorical
+      - name: converted_at
+        data_type: timestamp with time zone
+        description: First checkout page view inside the window, or null.
+      - name: is_converted_7d
+        data_type: boolean
+        description: A checkout followed within 7 days.
+        data_tests: [not_null]
+      - name: is_window_complete
+        data_type: boolean
+        description: >
+          The 7 days after the product view are all in the data, so the row cannot change any
+          more. False for the last week of data.
+        dimension:
+          type: categorical
+        data_tests: [not_null]
+    metrics:
+      - name: product_viewer_days
+        label: Visitors with a product view (visitor-days)
+        description: One per visitor and day with a product view.
+        type: simple
+        agg: count
+        expr: 1
+      - name: converted_viewer_days
+        label: Of those, reached checkout within 7 days
+        type: simple
+        agg: sum_boolean
+        expr: is_converted_7d

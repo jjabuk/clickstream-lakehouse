@@ -32,6 +32,11 @@ PAIRS = {
         "checkout_rate": "checkout_rate",
     },
     "traffic": {"events": "events", "bot_events": "bot_events", "bot_share": "bot_share"},
+    "conversion": {
+        "product_viewer_days": "product_viewer_days",
+        "converted_viewer_days": "converted_viewer_days",
+        "visitor_conversion_7d": "visitor_product_to_checkout_7d",
+    },
 }
 
 
