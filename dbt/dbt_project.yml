@@ -21,15 +21,29 @@ vars:
   # Range of dim_date; the world starts at the generator's epoch (2026-01-01).
   dim_date_start: "2026-01-01"
   dim_date_end: "2028-01-01"
-  # dbt_project_evaluator audits the project itself. It is off in a normal build (it would add
-  # ~48 models to the warehouse) and switched on by `make dbt-evaluate`.
-  enable_project_evaluator: false # read with a default in the config below; also set by the make target
-  # The evaluator audits this project's conventions, not those of installed packages.
-  exclude_packages: ["elementary"]
-  # elementary's anomaly tests train on the days before "now" and test the last ones. Time in the
-  # data is simulated, so "now" is the simulated clock: the end of the latest arrival day loaded
-  # (written by `make day`, passed by make as SIMULATED_NOW). Empty means the wall clock.
-  custom_run_started_at: "{{ env_var('SIMULATED_NOW', '') }}"
+  # dbt_project_evaluator's rules are dbt checks (ADR 0024): they run on the project graph before
+  # every build, and alone with `make dbt-evaluate`. These are the accepted violations, each with
+  # its reason.
+  dbt_project_evaluator_exceptions:
+    fct_root_models:
+      - dim_date # a generated calendar, so it has no upstream model
+    fct_sources_without_freshness:
+      # Time in the data is simulated, so source freshness against the wall clock means nothing.
+      # fresh_against_clock (macros/tests/) checks the marts against the simulated clock instead.
+      - clickstream.events
+      - shop.users
+      - shop.products
+      - shop.categories
+    fct_rejoining_of_upstream_concepts:
+      # The closed funnel is its own model so that its ordering rule has a unit test, and
+      # fct_sessions joins it back to the page views on purpose.
+      - int_sessions__funnel_steps
+  # The anomaly tests (macros/tests/) score the last complete day against the days before it.
+  # Time in the data is simulated, so they read "now" from the simulated clock (macro
+  # simulated_now), not the wall clock.
+  anomaly_training_days: 14
+  anomaly_min_training_days: 5
+  anomaly_sensitivity: 3
 
 models:
   clickstream:
@@ -43,24 +57,14 @@ models:
       # them (exposures in models/marts/_exposures.yml).
       +access: public
 
-  elementary:
-    # Test results and run artifacts that `edr report` reads, kept apart from the marts.
-    +schema: elementary
-
+# A violation of the project's conventions fails the build, as the 1.x evaluator failed `make check`.
+checks:
   dbt_project_evaluator:
-    +enabled: "{{ var('enable_project_evaluator', false) | as_bool }}"
-    # Keep the ~50 audit tables out of the schema that holds the marts.
-    +schema: evaluator
+    +severity: error
 
-seeds:
-  dbt_project_evaluator:
-    +enabled: "{{ var('enable_project_evaluator', false) | as_bool }}"
-    +schema: evaluator
-    # Replaced by this project's seed of the same name, which holds the documented exceptions.
-    dbt_project_evaluator_exceptions:
-      +enabled: false
-  clickstream:
-    # Documented exceptions for the evaluator; only used when it runs.
-    dbt_project_evaluator_exceptions:
-      +enabled: "{{ var('enable_project_evaluator', false) | as_bool }}"
-      +schema: evaluator
+flags:
+  # dbt v2 (ADR 0024): the Iceberg REST catalog is declared in catalogs.yml, not as a DuckDB
+  # attach in profiles.yml, which v2 does not pass through.
+  use_catalogs_v2: true
+  # Generic test arguments are read from `arguments:` only (dbt-autofix).
+  require_generic_test_arguments_property: true

@@ -88,7 +88,8 @@ replay (`make ci-metrics`), together with `mf validate-configs`.
   The lesson: a passing validation does not mean a metric is right. The fact table states the
   definition in SQL, a unit test pins it down, and every consumer reads the same counts.
 - `mf` reads `target/semantic_manifest.json`, so `make metrics-validate` runs `dbt parse`
-  first.
+  first. Since ADR 0024, `dbt parse` is dbt v2, and `mf` runs in its own environment
+  (`tools/metricflow`), because it is built on dbt-core 1.x.
 - **The time dimensions have hour granularity while the spine is daily.** MetricFlow warns about
   this. Queries by hour work, but `join_to_timespine` at hour grain would need an hourly spine.
 - **`dbt parse` validates the semantic manifest,** so slim CI (`make check`) catches broken

@@ -1,4 +1,6 @@
-# The build context is the repository root, but the image needs only the lockfile.
+# The build context is the repository root, but the image needs only the lockfile and the
+# libduckdb installer.
 *
 !pyproject.toml
 !uv.lock
+!infra/duckdb/install_libduckdb.sh

@@ -1,7 +1,7 @@
 """Move the simulated clock forward to the end of an arrival day; it never moves back.
 
-The clock file holds one ISO timestamp, the end of the latest arrival day loaded. elementary's
-anomaly tests read it (SIMULATED_NOW) as "now", because time in the data is simulated.
+The clock file holds one ISO timestamp, the end of the latest arrival day loaded. The dbt
+anomaly and freshness tests read it (SIMULATED_NOW) as "now", because time in the data is simulated.
 Standard library only, so make can call it with any python3.
 
     python3 ci/advance_clock.py 2026-02-01 data/simulated_now   # -> 2026-02-02T00:00:00+00:00

@@ -1,8 +1,8 @@
 .DEFAULT_GOAL := help
 
 .PHONY: help setup hooks lint format format-check test check clean \
-	up down ps logs storage-init reset psql-shop psql-platform catalog-init hosts-check bootstrap test-integration day dbt-deps dbt-debug dbt-build dbt-docs dbt-evaluate elementary-report warehouse-shell lint-sql fix-sql \
-	airflow-up airflow-down airflow-check airflow-backfill airflow-day metrics-validate metrics-query marts-publish evidence-install evidence-dev evidence-validate iceberg-snapshots iceberg-files iceberg-partition iceberg-time-travel iceberg-fragment iceberg-compact iceberg-expire \
+	up down ps logs storage-init reset psql-shop psql-platform catalog-init hosts-check bootstrap test-integration day dbt-deps dbt-debug dbt-build dbt-docs dbt-evaluate warehouse-shell lint-sql fix-sql \
+	libduckdb-install airflow-up airflow-down airflow-check airflow-backfill airflow-day metrics-validate metrics-query marts-publish evidence-install evidence-dev evidence-validate iceberg-snapshots iceberg-files iceberg-partition iceberg-time-travel iceberg-fragment iceberg-compact iceberg-expire \
 	ci-days ci-replay ci-verify-incremental ci-metrics ci-state ci-mode ci-slim ci-logs
 
 -include .env
@@ -10,11 +10,15 @@ export
 
 COMPOSE := docker compose -f infra/docker-compose.yml --env-file .env
 
-# The simulated clock: the end of the latest arrival day `make day` has loaded. elementary's
-# anomaly tests measure "now" against it instead of the wall clock (see dbt_project.yml).
+# The simulated clock: the end of the latest arrival day `make day` has loaded. The anomaly and
+# freshness tests measure "now" against it instead of the wall clock (macro simulated_now).
 SIM_CLOCK ?= data/simulated_now
 DBT = SIMULATED_NOW=$$(cat $(SIM_CLOCK) 2>/dev/null) uv run dbt
 DBT_ARGS := --project-dir dbt --profiles-dir dbt
+# dbt v2 (ADR 0024): no usage statistics, and no warning that it skips validating the semantic
+# manifest without a dbt platform account; `make metrics-validate` validates it with MetricFlow.
+export DBT_SEND_ANONYMOUS_USAGE_STATS := false
+export DBT_ENGINE_NO_WARN_SEMANTIC_MANIFEST_VALIDATION := 1
 
 # Evidence (ADR 0018): the CLI pinned by evidence/install_cli.sh, without telemetry. It reads the
 # marts in Postgres as analytics_reader; older .env files lack the password, hence the default.
@@ -25,27 +29,32 @@ EVIDENCE = cd evidence && DO_NOT_TRACK=1 EVIDENCE_TELEMETRY_DISABLED=1 $(EVIDENC
 help: ## Show available targets
 	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z_-]+:.*## / {printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
-setup: ## Install dependencies from uv.lock and git hooks
+setup: ## Install dependencies from uv.lock (and MetricFlow's own env) and git hooks
 	uv sync --frozen
+	uv sync --frozen --project tools/metricflow
 	$(MAKE) hooks
 
 hooks: ## Install pre-commit git hooks
 	uv run pre-commit install
 
-lint: lint-sql ## Lint Python with ruff and SQL with sqlfluff
+lint: lint-sql ## Lint Python with ruff and SQL with dbt lint
 	uv run ruff check .
 
-# The dbt templater needs the package macros (dbt_utils, ...) but no stack: see the `lint` target
+# Rendering the Jinja needs the package macros (dbt_utils, ...) but no stack: see the `lint` target
 # in dbt/profiles.yml. Packages are installed only when missing or when their pins change.
 dbt/dbt_packages: dbt/packages.yml dbt/package-lock.yml
 	$(DBT) deps $(DBT_ARGS)
 	@touch $@
 
-lint-sql: dbt/dbt_packages ## Lint the dbt SQL with sqlfluff (no stack needed)
-	uv run sqlfluff lint dbt/models dbt/tests
+# dbt lint reads dbt/.sqlfluff. A rule without an autofix only warns by default; here every
+# violation fails, as sqlfluff did. The notice about agent skills in packages stays a warning.
+LINT_STRICT := --warn-error-options '{"error": "all", "warn": ["AiProviderUnset"]}'
 
-fix-sql: dbt/dbt_packages ## Auto-fix what sqlfluff can in the dbt SQL (review the diff)
-	uv run sqlfluff fix dbt/models dbt/tests
+lint-sql: dbt/dbt_packages ## Lint the dbt SQL with dbt lint, SQLFluff rules (no stack needed)
+	$(DBT) lint $(DBT_ARGS) --target lint $(LINT_STRICT)
+
+fix-sql: dbt/dbt_packages ## Auto-fix what dbt lint can in the dbt SQL (one pass; review the diff)
+	$(DBT) lint $(DBT_ARGS) --target lint --fix
 
 format: ## Format with ruff
 	uv run ruff format .
@@ -177,14 +186,16 @@ dbt-docs: .env ## Build and serve the dbt docs with the lineage graph (http://lo
 	$(DBT) docs generate $(DBT_ARGS)
 	$(DBT) docs serve $(DBT_ARGS) --port 8080
 
-# The evaluator reads only the project graph, so it runs on the stackless `lint` target and its
-# ~50 audit tables live in memory instead of the warehouse.
-dbt-evaluate: dbt/dbt_packages ## Audit the dbt project (structure, tests, docs) with dbt_project_evaluator (no stack needed)
-	$(DBT) build $(DBT_ARGS) --target lint --select package:dbt_project_evaluator dbt_project_evaluator_exceptions --vars '{enable_project_evaluator: true}'
+# dbt_project_evaluator 2.x is a set of dbt checks on the project graph: no warehouse, no stack.
+# They also run before every dbt build.
+dbt-evaluate: dbt/dbt_packages ## Audit the dbt project (structure, tests, docs) with dbt_project_evaluator checks (no stack needed)
+	$(DBT) check $(DBT_ARGS) --target lint
 
 # MetricFlow (ADR 0023) reads the semantic manifest that dbt parse writes, and queries the warehouse
-# through the dev profile (from dbt/, so the warehouse path must be absolute).
-MF = cd dbt && DBT_PROFILES_DIR=. DBT_DUCKDB_PATH=$(abspath $(or $(DBT_DUCKDB_PATH),data/warehouse.duckdb)) uv run mf
+# through the dev profile (from dbt/, so the warehouse path must be absolute). It runs in its own
+# environment, tools/metricflow: it is built on dbt-core 1.x, which cannot share one with dbt v2.
+MF = cd dbt && DBT_PROFILES_DIR=. DBT_DUCKDB_PATH=$(abspath $(or $(DBT_DUCKDB_PATH),data/warehouse.duckdb)) \
+	uv run --frozen --project $(CURDIR)/tools/metricflow mf
 
 metrics-validate: .env ## Semantic layer: parse dbt, then check semantic models and metrics against the warehouse
 	uv run dbt parse $(DBT_ARGS) --quiet
@@ -193,6 +204,12 @@ metrics-validate: .env ## Semantic layer: parse dbt, then check semantic models 
 metrics-query: .env ## Semantic layer: make metrics-query METRICS=sessions,checkout_rate [GROUP_BY=metric_time__week,session__device]
 	@test -n "$(METRICS)" || (echo "usage: make metrics-query METRICS=a,b [GROUP_BY=metric_time__day]"; exit 1)
 	$(MF) query --metrics $(METRICS) --group-by $(or $(GROUP_BY),metric_time__day) --order $(firstword $(subst $(comma), ,$(or $(GROUP_BY),metric_time__day)))
+
+# dbt v2 runs the system libduckdb when there is one, else its own DuckDB 1.5.4, which cannot open
+# a warehouse written by DuckDB 2.0. The Airflow image runs this at build time; on macOS, Homebrew's
+# duckdb provides the library (ADR 0024).
+libduckdb-install: ## Install the pinned libduckdb (DuckDB 2.0.0) that dbt v2 uses on Linux (needs sudo)
+	sudo infra/duckdb/install_libduckdb.sh
 
 marts-publish: .env ## Copy the marts from the DuckDB warehouse to Postgres analytics.marts, which Evidence reads
 	SIMULATED_NOW=$$(cat $(SIM_CLOCK) 2>/dev/null) uv run python -m serving
@@ -205,12 +222,6 @@ evidence-validate: ## Check the Evidence pages, metrics and their queries agains
 
 evidence-dev: ## Serve the Evidence dashboard locally (run make marts-publish first)
 	$(EVIDENCE) dev
-
-elementary-report: ## Build the elementary report (tests, anomalies, run history) into data/elementary_report.html
-	@# edr runs dbt from its own project directory, so the warehouse path must be absolute.
-	DBT_DUCKDB_PATH=$(abspath $(or $(DBT_DUCKDB_PATH),data/warehouse.duckdb)) \
-		uv run edr report --project-dir dbt --profiles-dir dbt \
-		--file-path $(CURDIR)/data/elementary_report.html --open-browser false
 
 warehouse-shell: ## Read-only DuckDB shell on the marts, in UTC (needs the duckdb CLI; no dbt run at the same time)
 	duckdb -readonly data/warehouse.duckdb -cmd "SET TimeZone='UTC'"
@@ -260,12 +271,10 @@ ci-state: ## CI: collect the production state (manifest and warehouse) that pull
 ci-mode: .env dbt/dbt_packages ## CI: decide whether a pull request gets the slim build or the full replay
 	./ci/choose_mode.sh $(abspath $(CI_STATE)) $(CI_BASE)
 
-# elementary's own tables are built too: its run hooks and anomaly tests write to them in the PR
-# database, which starts empty. They are small and hold only this run's results.
 ci-slim: .env dbt/dbt_packages ## CI: build state:modified+ only, deferring the rest to the production state
 	mkdir -p $(CI_DIR) && rm -f $(CI_DIR)/pr.duckdb
 	DBT_DEFER_DUCKDB_PATH=$(CI_STATE)/warehouse.duckdb $(DBT) build $(DBT_ARGS) --target ci \
-		--select state:modified+ package:elementary --defer --state $(abspath $(CI_STATE))
+		--select state:modified+ --defer --state $(abspath $(CI_STATE))
 
 ci-logs: .env ## CI: print the last lines of every service log (no follow, for failed runs)
 	$(COMPOSE) logs --no-color --tail=200

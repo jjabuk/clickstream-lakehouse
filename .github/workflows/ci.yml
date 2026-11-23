@@ -1,6 +1,6 @@
 # CI (ADR 0015). Two jobs:
 #
-#   check  no stack: ruff, sqlfluff, unit tests, dbt_project_evaluator (`make check`).
+#   check  no stack: ruff, dbt lint, unit tests, dbt_project_evaluator checks (`make check`).
 #   dbt    the real stack in docker compose, seeded synthetic days, then one of:
 #            full  (main, manual runs, and PRs that touch incremental logic or the data): replay
 #                  the CI days one by one with a dbt build after each, then verify that a full
@@ -58,6 +58,8 @@ jobs:
           version: ${{ env.UV_VERSION }}
           enable-cache: true
       - run: uv sync --frozen
+      # dbt v2 would otherwise run its own DuckDB 1.5.4 instead of 2.0.0 (ADR 0024).
+      - run: make libduckdb-install
 
       # Every client reaches Garage under one name (ADR 0012).
       - name: Resolve the S3 hostname

@@ -147,6 +147,9 @@ services:
       PROJECT_DIR: /opt/project
       PROJECT_PYTHON: /opt/project-venv/bin/python
       DBT_EXECUTABLE: /opt/project-venv/bin/dbt
+      # dbt v2 without usage statistics, as the Makefile runs it (ADR 0024).
+      DBT_SEND_ANONYMOUS_USAGE_STATS: "false"
+      DBT_ENGINE_NO_WARN_SEMANTIC_MANIFEST_VALIDATION: "1"
       DBT_DUCKDB_PATH: /opt/project/data/warehouse.duckdb
       LAKEKEEPER_URL: http://lakekeeper:8181
       SHOP_POSTGRES_HOST: postgres-shop

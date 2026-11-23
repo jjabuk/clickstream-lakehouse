@@ -28,9 +28,9 @@ flowchart LR
 - **Write-audit-publish.** Each arrival day is written to a branch `wap_YYYYMMDD` and audited:
   volume, duplicate deliveries, unknown event types and missing URLs. Only then is `main`
   fast-forwarded. A faulty batch stays on its branch and nothing downstream sees it (ADR 0008).
-- **dbt** builds staging, intermediate and marts in a DuckDB file. Incremental models merge with
+- **dbt v2** builds staging, intermediate and marts in a DuckDB file (ADR 0024). Incremental models merge with
   a lookback window for late events (ADR 0004). `dim_user` is SCD2 from a snapshot. Tests use
-  dbt-utils, dbt-expectations and elementary; elementary's volume and freshness anomalies run
+  dbt-utils, dbt-expectations and three tests of our own; the volume and freshness anomalies run
   on the simulated clock.
 - **Airflow** replays simulated days with backfills. Cosmos runs one `dbt build` in watcher mode,
   because DuckDB has a single writer (ADR 0017).
@@ -58,8 +58,9 @@ dbt project to Databricks.
 
 ## Quickstart
 
-Requirements: Docker, [uv](https://docs.astral.sh/uv/), and the `/etc/hosts` entry
-`127.0.0.1 garage` (ADR 0012; `make hosts-check` tells you).
+Requirements: Docker, [uv](https://docs.astral.sh/uv/), DuckDB 2.0.0 as a system library
+(Homebrew's `duckdb` on macOS, `make libduckdb-install` on Linux; dbt v2 uses it, ADR 0024), and
+the `/etc/hosts` entry `127.0.0.1 garage` (ADR 0012; `make hosts-check` tells you).
 
 ```bash
 make setup
@@ -216,5 +217,6 @@ docs/adr/       architecture decision records
 | [0016](docs/adr/0016-iceberg-table-maintenance-with-pyiceberg.md) | Iceberg maintenance with PyIceberg |
 | [0017](docs/adr/0017-airflow-with-cosmos-watcher-mode.md) | Airflow with Cosmos in watcher mode |
 | [0018](docs/adr/0018-evidence-studio-on-a-postgres-serving-copy.md) | Evidence on a Postgres copy of the marts |
-| [0019](docs/adr/0019-stay-on-dbt-core-1-12-for-now.md) | Stay on dbt Core 1.12 until v2 runs elementary on DuckDB |
+| [0019](docs/adr/0019-stay-on-dbt-core-1-12-for-now.md) | Stay on dbt Core 1.12 until v2 runs elementary on DuckDB (superseded by 0024) |
 | [0023](docs/adr/0023-semantic-layer-in-dbt-with-metricflow.md) | The semantic layer in dbt (MetricFlow) |
+| [0024](docs/adr/0024-dbt-v2-without-elementary.md) | dbt v2, with our own anomaly tests instead of elementary |

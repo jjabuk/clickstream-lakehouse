@@ -7,10 +7,10 @@ A run handles one arrival day D, the same work as `make day DATE=D` followed by 
    a branch, audits it and publishes it (ADR 0008). A failed audit fails this task, so dbt never
    runs on a day `main` does not have. `make airflow-day DAY=... FAULT=truncated` breaks the first
    delivery on purpose; clearing the failed task (a retry) is the source's corrected redelivery.
-2. `elementary_tables`: elementary's own tables, which its run hooks write to.
-3. `dbt`: one `dbt build` (Cosmos watcher mode), with a task per model that follows its status.
-   DuckDB allows one writer per file, so the build cannot be split into parallel dbt processes.
-4. `publish_marts`: `make marts-publish`, the marts copied to Postgres for Evidence (ADR 0018).
+2. `dbt`: one `dbt build` (Cosmos watcher mode, dbt v2 as a subprocess, ADR 0024), with a task
+   per model that follows its status. DuckDB allows one writer per file, so the build cannot be
+   split into parallel dbt processes.
+3. `publish_marts`: `make marts-publish`, the marts copied to Postgres for Evidence (ADR 0018).
    It runs only after a passing build, so the dashboard never shows a failed day.
 
 Simulated time: the shop's days are not today's days, so only two kinds of run do anything.
@@ -47,7 +47,7 @@ DBT = os.environ.get("DBT_EXECUTABLE", "/opt/project-venv/bin/dbt")
 DBT_PROJECT = PROJECT / "dbt"
 
 DAY = "{{ logical_date | ds }}"
-# elementary's "now" is the end of the arrival day, as `make day` sets it (data/simulated_now).
+# The tests' "now" is the end of the arrival day, as `make day` sets it (data/simulated_now).
 SIMULATED_NOW = "{{ macros.ds_add(logical_date | ds, 1) }}T00:00:00+00:00"
 
 
@@ -112,17 +112,6 @@ with DAG(
         ),
     )
 
-    elementary_tables = BashOperator(
-        task_id="elementary_tables",
-        cwd=str(PROJECT),
-        bash_command=(
-            f"{DBT} run --project-dir dbt --profiles-dir dbt --select package:elementary "
-            "--quiet --log-path /tmp/dbt-logs --target-path /tmp/dbt-target"
-        ),
-        env={"SIMULATED_NOW": SIMULATED_NOW},
-        append_env=True,
-    )
-
     dbt = DbtTaskGroup(
         group_id="dbt",
         # dbt_packages comes with the mounted repository (`make airflow-up` installs it). Cosmos
@@ -140,8 +129,6 @@ with DAG(
         render_config=RenderConfig(
             dbt_executable_path=DBT,
             invocation_mode=InvocationMode.SUBPROCESS,
-            # The project's own models, snapshot and tests; elementary's models are built above.
-            exclude=["package:elementary"],
         ),
         operator_args={
             "env": {"SIMULATED_NOW": SIMULATED_NOW},
@@ -165,6 +152,6 @@ with DAG(
         depends_on_past=False,
     )
 
-    replays_only >> load_day >> elementary_tables >> dbt >> publish_marts
+    replays_only >> load_day >> dbt >> publish_marts
 
     dag.doc_md = __doc__

@@ -1,12 +1,9 @@
-# Pinned to the latest releases that support dbt-core 1.12. dbt_project_evaluator 2.x needs
-# dbt 2.0, so the last 1.x release is used. audit_helper (week 4) is added when it is needed.
-# elementary must match the `edr` CLI version in pyproject.toml.
+# Pinned to the latest releases for dbt v2 (ADR 0024). audit_helper (week 4) is added when it
+# is needed.
 packages:
   - package: dbt-labs/dbt_utils
     version: 1.4.1
   - package: metaplane/dbt_expectations
     version: 0.10.10
   - package: dbt-labs/dbt_project_evaluator
-    version: 1.4.1
-  - package: elementary-data/elementary
-    version: 0.26.1
+    version: 2.0.2

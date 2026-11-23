@@ -14,6 +14,10 @@ COPY --from=ghcr.io/astral-sh/uv:0.13.7 /uv /usr/local/bin/uv
 
 USER root
 RUN mkdir -p /opt/project-venv && chown airflow: /opt/project-venv
+# dbt v2 uses a system libduckdb when there is one; without it, it would download DuckDB 1.5.4,
+# which cannot open the warehouse the host writes with DuckDB 2.0 (ADR 0024).
+COPY infra/duckdb/install_libduckdb.sh /tmp/install_libduckdb.sh
+RUN /tmp/install_libduckdb.sh && rm /tmp/install_libduckdb.sh
 USER airflow
 
 COPY --chown=airflow: pyproject.toml uv.lock /tmp/project/

@@ -1,6 +1,6 @@
 # ADR 0019: Stay on dbt Core 1.12 until v2 runs elementary on DuckDB
 
-- **Status:** accepted
+- **Status:** superseded by [ADR 0024](0024-dbt-v2-without-elementary.md)
 - **Date:** 2026-11-23
 - **Versions:** dbt-core 1.12.7 and dbt-duckdb 1.11.1 (in use); dbt 2.0.12 (`pip install dbt`,
   tried); dbt-autofix (latest); elementary 0.26.1.

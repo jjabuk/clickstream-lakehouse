@@ -38,13 +38,12 @@ psycopg differ between Airflow's constraints and the project's lock.
 **DAG `clickstream_daily`:**
 
 ```
-replays_only >> load_day >> elementary_tables >> dbt (Cosmos task group)
+replays_only >> load_day >> dbt (Cosmos task group) >> publish_marts
 ```
 
 - **`load_day`** is `make day` without make: generate, then write-audit-publish, then advance the
   simulated clock. A failed audit fails the task, and nothing downstream runs.
-- **`elementary_tables`** builds elementary's own models, which its run hooks write to. They are
-  left out of the Cosmos group so that the graph shows the project's models only.
+- **`elementary_tables`** was removed with elementary (ADR 0024).
 - **`dbt`** uses `ExecutionMode.WATCHER`. A single producer task runs one `dbt build`, and a
   deferrable sensor per model and test follows that node's status from the dbt log. One process
   writes DuckDB, and the graph still shows which model failed. dbt runs as a subprocess from the
@@ -108,3 +107,10 @@ network. Before the change, the catalog config sent containers to `localhost`.
   data was lost and the day was re-run.
 - **CI does not run Airflow.** `make airflow-check` reports DAG import errors on the running
   stack. A DAG test in CI would need the image, which is a candidate for later.
+
+## Update (ADR 0024)
+
+- dbt v2 runs in the same watcher mode. Cosmos 1.16 supports dbt 2 and runs it as a subprocess.
+  It was verified on a full `clickstream_daily` run.
+- The image installs libduckdb 2.0.0 (`infra/duckdb/install_libduckdb.sh`). Without it, dbt v2
+  downloads DuckDB 1.5.4, which cannot open the warehouse the host writes.

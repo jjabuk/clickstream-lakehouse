@@ -21,17 +21,8 @@ clickstream:
           region: "{{ env_var('S3_REGION', 'garage') }}"
           url_style: path
           use_ssl: "false"
+      # Bronze, in the Iceberg catalog, is attached from catalogs.yml (ADR 0024).
       attach:
-        - &iceberg
-          path: lakehouse
-          alias: lk
-          type: iceberg
-          read_only: true
-          options:
-            uri: "{{ env_var('LAKEKEEPER_URL', 'http://localhost:8181') }}/catalog"
-            authorization_type: none
-            # Garage has no STS, so DuckDB signs with its own key (ADR 0003).
-            access_delegation_mode: none
         - &shop
           path: "host={{ env_var('SHOP_POSTGRES_HOST', 'localhost') }} port={{ env_var('SHOP_POSTGRES_PORT', '5432') }} dbname=shop user={{ env_var('SHOP_POSTGRES_USER') }} password={{ env_var('SHOP_POSTGRES_PASSWORD') }}"
           alias: shop
@@ -46,29 +37,15 @@ clickstream:
       <<: *dev
       path: data/ci/pr.duckdb
       attach:
-        - *iceberg
         - *shop
         - path: "{{ env_var('DBT_DEFER_DUCKDB_PATH', 'data/ci/state/warehouse.duckdb') }}"
           alias: warehouse
           read_only: true
 
-    # Used by sqlfluff (make lint-sql, pre-commit, CI) and dbt_project_evaluator (make
+    # Used by dbt lint (make lint-sql, pre-commit, CI) and dbt_project_evaluator (make
     # dbt-evaluate). Compiling a model renders names and the evaluator reads only the project
     # graph, so neither touches data: no stack, no credentials, no attached databases.
     lint:
       type: duckdb
       path: ":memory:"
       threads: 1
-
-# Read by the elementary CLI (`make elementary-report`): the warehouse file, and the schema where
-# the elementary package keeps test results and run artifacts.
-elementary:
-  target: default
-  outputs:
-    default:
-      type: duckdb
-      path: "{{ env_var('DBT_DUCKDB_PATH', 'data/warehouse.duckdb') }}"
-      schema: main_elementary
-      threads: 1
-      settings:
-        TimeZone: UTC

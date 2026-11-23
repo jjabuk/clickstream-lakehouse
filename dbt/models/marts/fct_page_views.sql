@@ -51,8 +51,8 @@ page_views as (
     {% if is_incremental() %}
         -- anything that arrived after the last run, and everything recent enough to be affected
         and (
-            received_at > (select received_at from watermark)
-            or occurred_at >= (select occurred_at from window_start)
+            received_at > (select watermark.received_at from watermark)
+            or occurred_at >= (select window_start.occurred_at from window_start)
         )
     {% endif %}
 
@@ -73,9 +73,9 @@ sessionization_input as (
     select event_id, cookie_id, occurred_at
     from {{ this }}
     where
-        occurred_at < (select occurred_at from window_start)
-        and occurred_at >= (select occurred_at from window_start) - to_hours({{ var('session_context_hours') }})
-        and event_id not in (select event_id from page_views)
+        occurred_at < (select window_start.occurred_at from window_start)
+        and occurred_at >= (select window_start.occurred_at from window_start) - to_hours({{ var('session_context_hours') }})
+        and event_id not in (select page_views.event_id from page_views)
     {% endif %}
 
 ),

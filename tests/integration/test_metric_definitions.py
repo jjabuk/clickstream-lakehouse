@@ -67,6 +67,10 @@ def _evidence(view: str, names: list[str]) -> dict[str, dict[str, float]]:
     return {day: dict(zip(names, values, strict=True)) for day, *values in rows}
 
 
+# MetricFlow has its own environment: it is built on dbt-core 1.x, which cannot live next to v2.
+MF = ["uv", "run", "--frozen", "--project", str(ROOT / "tools/metricflow"), "mf"]
+
+
 def _metricflow(names: list[str], tmp_path: Path) -> dict[str, dict[str, float]]:
     out = tmp_path / "mf.csv"
     env = {**os.environ, "DBT_PROFILES_DIR": ".", "DBT_DUCKDB_PATH": str(WAREHOUSE)}
@@ -77,8 +81,16 @@ def _metricflow(names: list[str], tmp_path: Path) -> dict[str, dict[str, float]]
         check=True,
     )
     subprocess.run(
-        ["uv", "run", "mf", "query", "--metrics", ",".join(names)]
-        + ["--group-by", "metric_time__day", "--csv", str(out)],
+        [
+            *MF,
+            "query",
+            "--metrics",
+            ",".join(names),
+            "--group-by",
+            "metric_time__day",
+            "--csv",
+            str(out),
+        ],
         cwd=ROOT / "dbt",
         env=env,
         check=True,

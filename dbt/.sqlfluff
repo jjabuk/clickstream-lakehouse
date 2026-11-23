@@ -1,3 +1,5 @@
+# Read by `dbt lint` (ADR 0024), which is SQLFluff-compatible: same rule codes, same file, same
+# `-- noqa` comments. It renders the dbt Jinja itself, with the stackless `lint` target.
 [sqlfluff]
 dialect = duckdb
 templater = dbt
@@ -5,12 +7,6 @@ max_line_length = 100
 # ST06 asks for plain columns before calculated ones. Column order in the marts follows meaning
 # (keys, then time, then attributes), and reordering them to satisfy a style rule would hurt readability.
 exclude_rules = ST06
-
-[sqlfluff:templater:dbt]
-project_dir = dbt
-profiles_dir = dbt
-profile = clickstream
-target = lint
 
 [sqlfluff:indentation]
 indent_unit = space

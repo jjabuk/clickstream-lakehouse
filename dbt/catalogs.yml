@@ -1,0 +1,15 @@
+# The Iceberg REST catalog (Lakekeeper) that bronze lives in, attached read-only as `lk`
+# (ADR 0002, 0003). dbt v2 declares catalogs here (flag use_catalogs_v2) instead of as a DuckDB
+# attach in profiles.yml (ADR 0024).
+catalogs:
+  - name: lk
+    type: iceberg_rest
+    table_format: iceberg
+    config:
+      duckdb:
+        endpoint: "{{ env_var('LAKEKEEPER_URL', 'http://localhost:8181') }}/catalog"
+        warehouse: lakehouse
+        authorization_type: NONE
+        # Garage has no STS, so DuckDB signs with its own S3 key (ADR 0003).
+        access_delegation_mode: NONE
+        read_only: true
