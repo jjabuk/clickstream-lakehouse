@@ -1,0 +1,12 @@
+# The marts as published by `python -m serving` (make marts-publish) to the `analytics` database
+# on postgres-platform. Read-only role; the password comes from the environment, which make
+# exports (dev default in the Makefile). No secrets here, so the file is committed.
+type: postgres
+host: localhost
+port: 5433 # postgres-platform as compose publishes it
+user: analytics_reader
+password: "${ANALYTICS_READER_PASSWORD}"
+database: analytics
+sslmode: disable # local only
+schema: marts
+schemas: ["marts"]

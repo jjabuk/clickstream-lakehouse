@@ -1,7 +1,7 @@
 """One arrival day of the shop: generate it, load it through write-audit-publish, build dbt.
 
 A run handles one arrival day D, the same work as `make day DATE=D` followed by `make dbt-build`
-(ADR 0017):
+(ADR 0017), then `make marts-publish`:
 
 1. `load_day`: the generator writes D's landing file and orders, the ingest loads it to bronze on
    a branch, audits it and publishes it (ADR 0008). A failed audit fails this task, so dbt never
@@ -10,6 +10,8 @@ A run handles one arrival day D, the same work as `make day DATE=D` followed by 
 2. `elementary_tables`: elementary's own tables, which its run hooks write to.
 3. `dbt`: one `dbt build` (Cosmos watcher mode), with a task per model that follows its status.
    DuckDB allows one writer per file, so the build cannot be split into parallel dbt processes.
+4. `publish_marts`: `make marts-publish`, the marts copied to Postgres for Evidence (ADR 0018).
+   It runs only after a passing build, so the dashboard never shows a failed day.
 
 Simulated time: the shop's days are not today's days, so only two kinds of run do anything.
 Every run handles its logical date: a backfill run (`make airflow-backfill FROM=... TO=...`), or a
@@ -147,6 +149,22 @@ with DAG(
         },
     )
 
-    replays_only >> load_day >> elementary_tables >> dbt
+    # The marts for Evidence (ADR 0018): a copy in Postgres, swapped in one transaction.
+    publish_marts = BashOperator(
+        task_id="publish_marts",
+        cwd=str(PROJECT),
+        bash_command=f"{PYTHON} -m serving",
+        env={
+            "SIMULATED_NOW": SIMULATED_NOW,
+            "PLATFORM_POSTGRES_HOST": "postgres-platform",
+            "PLATFORM_POSTGRES_PORT": "5432",
+        },
+        append_env=True,
+        # The dbt tasks before it already wait for the previous day. With depends_on_past, a task
+        # added to the DAG later never starts: the previous run has no instance of it.
+        depends_on_past=False,
+    )
+
+    replays_only >> load_day >> elementary_tables >> dbt >> publish_marts
 
     dag.doc_md = __doc__

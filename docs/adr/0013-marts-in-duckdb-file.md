@@ -33,7 +33,7 @@ nothing downstream is rebuilt from it.
 ## Consequences
 
 - A DuckDB file has a single writer: one dbt process at a time, and readers (Evidence, Feast)
-  open it read-only or work on a copy. Fine locally, not a production design; on Databricks
+  open it read-only or work on a copy (Evidence reads a Postgres copy: ADR 0018). Fine locally, not a production design; on Databricks
   (stage 2) the same models land in Delta tables.
 - Everything except snapshots is **rebuildable** from bronze with `--full-refresh`, so the file is
   disposable. `dim_user` is the exception: its history exists only in the snapshot table, because

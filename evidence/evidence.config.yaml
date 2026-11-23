@@ -1,0 +1,6 @@
+# Evidence project (ADR 0018). The CLI is pinned in install_cli.sh; `make evidence-dev` runs it.
+project:
+  name: "clickstream-lakehouse"
+  evidence: "0.12.2"
+
+pages: ./pages

@@ -2,7 +2,7 @@
 
 .PHONY: help setup hooks lint format format-check test check clean \
 	up down ps logs storage-init reset psql-shop psql-platform catalog-init hosts-check bootstrap test-integration day dbt-deps dbt-debug dbt-build dbt-docs dbt-evaluate elementary-report warehouse-shell lint-sql fix-sql \
-	airflow-up airflow-down airflow-check airflow-backfill airflow-day iceberg-snapshots iceberg-files iceberg-partition iceberg-time-travel iceberg-fragment iceberg-compact iceberg-expire \
+	airflow-up airflow-down airflow-check airflow-backfill airflow-day marts-publish evidence-install evidence-dev evidence-validate iceberg-snapshots iceberg-files iceberg-partition iceberg-time-travel iceberg-fragment iceberg-compact iceberg-expire \
 	ci-days ci-replay ci-verify-incremental ci-state ci-mode ci-slim ci-logs
 
 -include .env
@@ -15,6 +15,12 @@ COMPOSE := docker compose -f infra/docker-compose.yml --env-file .env
 SIM_CLOCK ?= data/simulated_now
 DBT = SIMULATED_NOW=$$(cat $(SIM_CLOCK) 2>/dev/null) uv run dbt
 DBT_ARGS := --project-dir dbt --profiles-dir dbt
+
+# Evidence (ADR 0018): the CLI pinned by evidence/install_cli.sh, without telemetry. It reads the
+# marts in Postgres as analytics_reader; older .env files lack the password, hence the default.
+ANALYTICS_READER_PASSWORD ?= analytics-reader-dev
+EVIDENCE_BIN ?= $(HOME)/.local/bin/evidence
+EVIDENCE = cd evidence && DO_NOT_TRACK=1 EVIDENCE_TELEMETRY_DISABLED=1 $(EVIDENCE_BIN)
 
 help: ## Show available targets
 	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z_-]+:.*## / {printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -175,6 +181,18 @@ dbt-docs: .env ## Build and serve the dbt docs with the lineage graph (http://lo
 # ~50 audit tables live in memory instead of the warehouse.
 dbt-evaluate: dbt/dbt_packages ## Audit the dbt project (structure, tests, docs) with dbt_project_evaluator (no stack needed)
 	$(DBT) build $(DBT_ARGS) --target lint --select package:dbt_project_evaluator dbt_project_evaluator_exceptions --vars '{enable_project_evaluator: true}'
+
+marts-publish: .env ## Copy the marts from the DuckDB warehouse to Postgres analytics.marts, which Evidence reads
+	SIMULATED_NOW=$$(cat $(SIM_CLOCK) 2>/dev/null) uv run python -m serving
+
+evidence-install: ## Install the pinned Evidence CLI (checksum-verified) into ~/.local/bin
+	evidence/install_cli.sh
+
+evidence-validate: ## Check the Evidence pages, metrics and their queries against the published marts
+	$(EVIDENCE) validate
+
+evidence-dev: ## Serve the Evidence dashboard locally (run make marts-publish first)
+	$(EVIDENCE) dev
 
 elementary-report: ## Build the elementary report (tests, anomalies, run history) into data/elementary_report.html
 	@# edr runs dbt from its own project directory, so the warehouse path must be absolute.

@@ -1,0 +1,24 @@
+# Every event that reached bronze per day, human or bot: what the marts filter out.
+base_sql: >
+  select d.date_day, case when t.is_bot then 'bot' else 'human' end as visitor,
+         t.events, t.page_view_events, t.add_to_cart_events
+  from marts.fct_traffic_daily t
+  join marts.dim_date d using (date_key)
+date: date_day
+default_date_grain: day
+dimensions:
+  visitor: visitor
+metrics:
+  events:
+    sql: sum(events)
+    fmt: num0
+    label: Events
+  bot_events:
+    sql: sum(events)
+    filter: visitor = 'bot'
+    fmt: num0
+    label: Bot events
+  bot_share:
+    sql: "{bot_events} * 1.0 / nullif({events}, 0)"
+    fmt: pct1
+    label: Bot share of events

@@ -1,0 +1,47 @@
+# Sessions and the closed funnel (product -> cart after product -> checkout after cart).
+# fct_funnel_daily keeps counts only, so every rate is a ratio of sums and stays correct at any
+# grain or filter: an average of daily rates would weight a quiet day like a busy one.
+base_sql: >
+  select d.date_day, f.device, f.utm_campaign, f.sessions, f.bounced_sessions,
+         f.product_sessions, f.cart_sessions, f.checkout_sessions
+  from marts.fct_funnel_daily f
+  join marts.dim_date d using (date_key)
+date: date_day
+default_date_grain: day
+dimensions:
+  device: device
+  campaign: utm_campaign
+metrics:
+  sessions:
+    sql: sum(sessions)
+    fmt: num0
+    label: Sessions
+    description: Human sessions (bots are filtered out in the marts)
+  bounced_sessions:
+    sql: sum(bounced_sessions)
+    fmt: num0
+  product_sessions:
+    sql: sum(product_sessions)
+    fmt: num0
+  cart_sessions:
+    sql: sum(cart_sessions)
+    fmt: num0
+  checkout_sessions:
+    sql: sum(checkout_sessions)
+    fmt: num0
+  bounce_rate:
+    sql: "{bounced_sessions} * 1.0 / nullif({sessions}, 0)"
+    fmt: pct1
+    label: Bounce rate
+  product_rate:
+    sql: "{product_sessions} * 1.0 / nullif({sessions}, 0)"
+    fmt: pct1
+    label: Reached a product
+  cart_rate:
+    sql: "{cart_sessions} * 1.0 / nullif({sessions}, 0)"
+    fmt: pct1
+    label: Added to cart
+  checkout_rate:
+    sql: "{checkout_sessions} * 1.0 / nullif({sessions}, 0)"
+    fmt: pct1
+    label: Reached checkout
