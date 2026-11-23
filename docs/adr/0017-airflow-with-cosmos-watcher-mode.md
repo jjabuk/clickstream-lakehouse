@@ -114,3 +114,11 @@ network. Before the change, the catalog config sent containers to `localhost`.
   It was verified on a full `clickstream_daily` run.
 - The image installs libduckdb 2.0.0 (`infra/duckdb/install_libduckdb.sh`). Without it, dbt v2
   downloads DuckDB 1.5.4, which cannot open the warehouse the host writes.
+- **The dbt tasks no longer use `depends_on_past`.** A model added to the project gets new tasks.
+  The previous run has no instance of them, so with `depends_on_past` they never started, and the
+  run hung. `load_day` still waits for the previous day, and the dbt group waits for `load_day`.
+- **A retry of the dbt group does not rerun the producer.** Cosmos skips the producer on a retry,
+  and each model then runs as its own dbt process. Those processes run in parallel, and DuckDB's
+  single writer makes them fail on the file lock. To redo a day, clear `load_day` with its
+  downstream tasks, or delete the run and trigger the day again.
+

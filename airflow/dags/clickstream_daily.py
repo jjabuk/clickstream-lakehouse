@@ -133,6 +133,10 @@ with DAG(
         operator_args={
             "env": {"SIMULATED_NOW": SIMULATED_NOW},
             "append_env": True,
+            # load_day already waits for the previous day, and the run waits for load_day. With
+            # depends_on_past here, the tasks of a model added later never start: the previous
+            # run has no instance of them.
+            "depends_on_past": False,
         },
     )
 
@@ -147,8 +151,7 @@ with DAG(
             "PLATFORM_POSTGRES_PORT": "5432",
         },
         append_env=True,
-        # The dbt tasks before it already wait for the previous day. With depends_on_past, a task
-        # added to the DAG later never starts: the previous run has no instance of it.
+        # As for the dbt tasks: load_day orders the days.
         depends_on_past=False,
     )
 
