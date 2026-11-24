@@ -56,8 +56,8 @@ published.
   failed batch would leave no trace in the lakehouse, and the audit would not see the batch the
   way readers will, after conforming to the table schema and the overwrite.
 - **Statistical gates only** (elementary anomalies). Good at spotting drift, but noisy on a short
-  history and probabilistic by nature. elementary stays warn-only and complements the audit's
-  fixed rules.
+  history and probabilistic by nature. elementary was warn-only and complemented the audit's
+  fixed rules until it was removed with the move to dbt v2 (ADR 0024).
 - **Nessie-style catalog branches** (a branch over the whole catalog). This is the alternative to
   Lakekeeper in ADR 0002. Table-level Iceberg branches are enough for a single-table bronze.
 

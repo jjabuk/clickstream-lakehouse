@@ -29,7 +29,6 @@ vars:
       - dim_date # a generated calendar, so it has no upstream model
     fct_sources_without_freshness:
       # Time in the data is simulated, so source freshness against the wall clock means nothing.
-      # fresh_against_clock (macros/tests/) checks the marts against the simulated clock instead.
       - clickstream.events
       - shop.users
       - shop.products
@@ -38,12 +37,6 @@ vars:
       # The closed funnel is its own model so that its ordering rule has a unit test, and
       # fct_sessions joins it back to the page views on purpose.
       - int_sessions__funnel_steps
-  # The anomaly tests (macros/tests/) score the last complete day against the days before it.
-  # Time in the data is simulated, so they read "now" from the simulated clock (macro
-  # simulated_now), not the wall clock.
-  anomaly_training_days: 14
-  anomaly_min_training_days: 5
-  anomaly_sensitivity: 3
 
 models:
   clickstream:

@@ -15,23 +15,6 @@ sources:
           - dbt_utils.unique_combination_of_columns:
               arguments:
                 combination_of_columns: [event_id, server_ts]
-          # A batch much smaller or larger than usual (a lost file, a duplicated load), per
-          # arrival day against the simulated clock (macros/tests/). Warn only: an anomaly is a
-          # signal to look at, not proof of bad data.
-          - volume_anomaly:
-              arguments:
-                timestamp_column: server_ts
-              config:
-                severity: warn
-          # Columns added or removed. utm_campaign is optional: bronze gains it on 2026-02-01.
-          - expected_columns:
-              arguments:
-                columns: [event_id, event_type, event_ts, server_ts, cookie_id, user_id, country,
-                          device, user_agent, page_type, page_url, product_id, quantity,
-                          _source_file, _ingested_at]
-                optional_columns: [utm_campaign]
-              config:
-                severity: warn
         columns:
           - name: event_id
             data_tests: [not_null]

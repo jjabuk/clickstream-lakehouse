@@ -47,7 +47,8 @@ DBT = os.environ.get("DBT_EXECUTABLE", "/opt/project-venv/bin/dbt")
 DBT_PROJECT = PROJECT / "dbt"
 
 DAY = "{{ logical_date | ds }}"
-# The tests' "now" is the end of the arrival day, as `make day` sets it (data/simulated_now).
+# The simulated clock after a day: its end, as `make day` sets it (data/simulated_now). The
+# published marts record it.
 SIMULATED_NOW = "{{ macros.ds_add(logical_date | ds, 1) }}T00:00:00+00:00"
 
 
@@ -131,8 +132,6 @@ with DAG(
             invocation_mode=InvocationMode.SUBPROCESS,
         ),
         operator_args={
-            "env": {"SIMULATED_NOW": SIMULATED_NOW},
-            "append_env": True,
             # load_day already waits for the previous day, and the run waits for load_day. With
             # depends_on_past here, the tasks of a model added later never start: the previous
             # run has no instance of them.

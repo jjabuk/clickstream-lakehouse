@@ -30,13 +30,12 @@ flowchart LR
   fast-forwarded. A faulty batch stays on its branch and nothing downstream sees it (ADR 0008).
 - **dbt v2** builds staging, intermediate and marts in a DuckDB file (ADR 0024). Incremental models merge with
   a lookback window for late events (ADR 0004). `dim_user` is SCD2 from a snapshot. Tests use
-  dbt-utils, dbt-expectations and three tests of our own; the volume and freshness anomalies run
-  on the simulated clock.
+  dbt-utils and dbt-expectations, plus unit tests for the sessionization, the SCD2 join and the
+  funnel.
 - **Airflow** replays simulated days with backfills. Cosmos runs one `dbt build` in watcher mode,
   because DuckDB has a single writer (ADR 0017).
-- **Semantic layer** in dbt (MetricFlow): metrics are defined once next to the marts, and a test
-  keeps the dashboard's definitions equal to them (ADR 0023). `make metrics-query
-  METRICS=sessions,checkout_rate GROUP_BY=metric_time__week,user__plan`.
+- **Semantic layer** in dbt (MetricFlow spec): semantic models and metrics are defined next to
+  the marts (ADR 0023).
 - **Evidence** reads a Postgres copy of the marts, swapped in one transaction after each build
   (ADR 0018).
 
@@ -219,4 +218,4 @@ docs/adr/       architecture decision records
 | [0018](docs/adr/0018-evidence-studio-on-a-postgres-serving-copy.md) | Evidence on a Postgres copy of the marts |
 | [0019](docs/adr/0019-stay-on-dbt-core-1-12-for-now.md) | Stay on dbt Core 1.12 until v2 runs elementary on DuckDB (superseded by 0024) |
 | [0023](docs/adr/0023-semantic-layer-in-dbt-with-metricflow.md) | The semantic layer in dbt (MetricFlow) |
-| [0024](docs/adr/0024-dbt-v2-without-elementary.md) | dbt v2, with our own anomaly tests instead of elementary |
+| [0024](docs/adr/0024-dbt-v2-without-elementary.md) | dbt v2, without elementary |

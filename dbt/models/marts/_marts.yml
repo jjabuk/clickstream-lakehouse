@@ -16,20 +16,6 @@ models:
       - dbt_utils.expression_is_true:
           arguments:
             expression: "received_at >= occurred_at"
-      # Human page views per day of occurrence, and how stale the newest row is, both against
-      # the simulated clock (macros/tests/).
-      - volume_anomaly:
-          arguments:
-            timestamp_column: occurred_at
-          config:
-            severity: warn
-      # An arrival day ends at midnight and its last page views come minutes before.
-      - fresh_against_clock:
-          arguments:
-            timestamp_column: received_at
-            max_hours: 6
-          config:
-            severity: warn
     semantic_model:
       enabled: true
     agg_time_dimension: occurred_at

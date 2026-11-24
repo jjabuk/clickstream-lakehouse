@@ -15,8 +15,7 @@ import pyarrow as pa
 EVENT_TYPES = ("page_view", "add_to_cart")
 # A day with fewer rows than this share of the recent median is treated as a lost delivery.
 # With the default generator the lowest day over 60 days is 0.80 of its 7-day median, so 0.5
-# leaves room for normal variation and still catches a partial upload. The dbt volume_anomaly
-# test on the source (a z-score, ADR 0024) is the statistical, warn-only counterpart.
+# leaves room for normal variation and still catches a partial upload.
 MIN_VOLUME_SHARE = 0.5
 # The volume check needs a few days of history before a median means anything.
 MIN_HISTORY_DAYS = 3

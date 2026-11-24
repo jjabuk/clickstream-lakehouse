@@ -2,21 +2,21 @@
 
 .PHONY: help setup hooks lint format format-check test check clean \
 	up down ps logs storage-init reset psql-shop psql-platform catalog-init hosts-check bootstrap test-integration day dbt-deps dbt-debug dbt-build dbt-docs dbt-evaluate warehouse-shell lint-sql fix-sql \
-	libduckdb-install airflow-up airflow-down airflow-check airflow-backfill airflow-day metrics-validate metrics-query marts-publish evidence-install evidence-dev evidence-validate iceberg-snapshots iceberg-files iceberg-partition iceberg-time-travel iceberg-fragment iceberg-compact iceberg-expire \
-	ci-days ci-replay ci-verify-incremental ci-metrics ci-state ci-mode ci-slim ci-logs
+	libduckdb-install airflow-up airflow-down airflow-check airflow-backfill airflow-day marts-publish evidence-install evidence-dev evidence-validate iceberg-snapshots iceberg-files iceberg-partition iceberg-time-travel iceberg-fragment iceberg-compact iceberg-expire \
+	ci-days ci-replay ci-verify-incremental ci-state ci-mode ci-slim ci-logs
 
 -include .env
 export
 
 COMPOSE := docker compose -f infra/docker-compose.yml --env-file .env
 
-# The simulated clock: the end of the latest arrival day `make day` has loaded. The anomaly and
-# freshness tests measure "now" against it instead of the wall clock (macro simulated_now).
+# The simulated clock: the end of the latest arrival day `make day` has loaded. marts-publish
+# records it next to the marts, so the dashboard shows which simulated day it is.
 SIM_CLOCK ?= data/simulated_now
-DBT = SIMULATED_NOW=$$(cat $(SIM_CLOCK) 2>/dev/null) uv run dbt
+DBT = uv run dbt
 DBT_ARGS := --project-dir dbt --profiles-dir dbt
 # dbt v2 (ADR 0024): no usage statistics, and no warning that it skips validating the semantic
-# manifest without a dbt platform account; `make metrics-validate` validates it with MetricFlow.
+# manifest, which it does only with a dbt platform account.
 export DBT_SEND_ANONYMOUS_USAGE_STATS := false
 export DBT_ENGINE_NO_WARN_SEMANTIC_MANIFEST_VALIDATION := 1
 
@@ -29,9 +29,8 @@ EVIDENCE = cd evidence && DO_NOT_TRACK=1 EVIDENCE_TELEMETRY_DISABLED=1 $(EVIDENC
 help: ## Show available targets
 	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z_-]+:.*## / {printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
-setup: ## Install dependencies from uv.lock (and MetricFlow's own env) and git hooks
+setup: ## Install dependencies from uv.lock and git hooks
 	uv sync --frozen
-	uv sync --frozen --project tools/metricflow
 	$(MAKE) hooks
 
 hooks: ## Install pre-commit git hooks
@@ -191,20 +190,6 @@ dbt-docs: .env ## Build and serve the dbt docs with the lineage graph (http://lo
 dbt-evaluate: dbt/dbt_packages ## Audit the dbt project (structure, tests, docs) with dbt_project_evaluator checks (no stack needed)
 	$(DBT) check $(DBT_ARGS) --target lint
 
-# MetricFlow (ADR 0023) reads the semantic manifest that dbt parse writes, and queries the warehouse
-# through the dev profile (from dbt/, so the warehouse path must be absolute). It runs in its own
-# environment, tools/metricflow: it is built on dbt-core 1.x, which cannot share one with dbt v2.
-MF = cd dbt && DBT_PROFILES_DIR=. DBT_DUCKDB_PATH=$(abspath $(or $(DBT_DUCKDB_PATH),data/warehouse.duckdb)) \
-	uv run --frozen --project $(CURDIR)/tools/metricflow mf
-
-metrics-validate: .env ## Semantic layer: parse dbt, then check semantic models and metrics against the warehouse
-	uv run dbt parse $(DBT_ARGS) --quiet
-	$(MF) validate-configs
-
-metrics-query: .env ## Semantic layer: make metrics-query METRICS=sessions,checkout_rate [GROUP_BY=metric_time__week,session__device]
-	@test -n "$(METRICS)" || (echo "usage: make metrics-query METRICS=a,b [GROUP_BY=metric_time__day]"; exit 1)
-	$(MF) query --metrics $(METRICS) --group-by $(or $(GROUP_BY),metric_time__day) --order $(firstword $(subst $(comma), ,$(or $(GROUP_BY),metric_time__day)))
-
 # dbt v2 runs the system libduckdb when there is one, else its own DuckDB 1.5.4, which cannot open
 # a warehouse written by DuckDB 2.0. The Airflow image runs this at build time; on macOS, Homebrew's
 # duckdb provides the library (ADR 0024).
@@ -259,10 +244,6 @@ ci-verify-incremental: .env ## CI: after ci-replay, fail unless a full refresh o
 	cp $(CI_DIR)/warehouse.duckdb $(CI_DIR)/incremental.duckdb
 	$(CI_WAREHOUSE) $(DBT) run $(DBT_ARGS) --full-refresh --select config.materialized:incremental+
 	uv run python ci/compare_warehouses.py $(CI_DIR)/incremental.duckdb $(CI_DIR)/warehouse.duckdb
-
-ci-metrics: .env ## CI: after ci-replay, check the semantic layer against the CI warehouse and Evidence's metrics against it
-	$(MAKE) --no-print-directory metrics-validate DBT_DUCKDB_PATH=$(CI_DIR)/warehouse.duckdb
-	DBT_DUCKDB_PATH=$(CI_DIR)/warehouse.duckdb uv run pytest -q tests/integration/test_metric_definitions.py
 
 ci-state: ## CI: collect the production state (manifest and warehouse) that pull requests defer to
 	rm -rf $(CI_STATE) && mkdir -p $(CI_STATE)

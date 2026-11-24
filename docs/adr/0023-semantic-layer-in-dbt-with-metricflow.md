@@ -53,12 +53,14 @@ columns of `fct_sessions` (`reached_product`, `reached_cart`, `reached_checkout`
 - **Exposures** for the four Evidence pages, and `access: public` on the marts. With that, the
   evaluator requires every mart column to be described, and they now are.
 
-**Evidence stays a second definition, kept equal by a test.** Evidence has no MetricFlow
-connector. `tests/integration/test_metric_definitions.py` expands Evidence's metric YAML into SQL,
-runs it on the warehouse, and compares every day with `mf query`. CI runs it after the full
-replay (`make ci-metrics`), together with `mf validate-configs`.
+**Evidence stays a second definition.** Evidence has no MetricFlow connector, so its metric
+YAML restates the same ratios over the same marts.
 
-**Commands:** `make metrics-validate` and `make metrics-query METRICS=... [GROUP_BY=...]`.
+> **Update (ADR 0024):** the `mf` CLI, `make metrics-validate` and `make metrics-query`, and the test
+> that compared Evidence's metrics with `mf query` were removed to keep the project simple. `mf`
+> needs dbt-core 1.x in an environment of its own next to dbt v2, and v2's `dbt sl` needs a dbt
+> platform account. The semantic models and metrics stay in the YAML as the definitions; dbt v2
+> parses them but validates them only with a platform account.
 
 ## Alternatives considered
 
@@ -87,9 +89,6 @@ replay (`make ci-metrics`), together with `mf validate-configs`.
 
   The lesson: a passing validation does not mean a metric is right. The fact table states the
   definition in SQL, a unit test pins it down, and every consumer reads the same counts.
-- `mf` reads `target/semantic_manifest.json`, so `make metrics-validate` runs `dbt parse`
-  first. Since ADR 0024, `dbt parse` is dbt v2, and `mf` runs in its own environment
-  (`tools/metricflow`), because it is built on dbt-core 1.x.
 - **The time dimensions have hour granularity while the spine is daily.** MetricFlow warns about
   this. Queries by hour work, but `join_to_timespine` at hour grain would need an hourly spine.
 - **`dbt parse` validates the semantic manifest,** so slim CI (`make check`) catches broken
