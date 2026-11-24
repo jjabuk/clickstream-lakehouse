@@ -201,7 +201,8 @@ dbt-build: .env ## Run and test all dbt models (ARGS="--select ..." to narrow)
 dbt-docs: .env ## Build and serve the dbt docs with the lineage graph (http://localhost:8080)
 	@mkdir -p data
 	$(DBT) docs generate $(DBT_ARGS)
-	$(DBT) docs serve $(DBT_ARGS) --port 8080
+	@# dbt v2 serves ./target of the working directory, whatever --project-dir says.
+	cd dbt && $(DBT) docs serve --profiles-dir . --port 8080
 
 # dbt_project_evaluator 2.x is a set of dbt checks on the project graph: no warehouse, no stack.
 # They also run before every dbt build.
@@ -281,7 +282,9 @@ ci-verify-incremental: .env ## CI: after ci-replay, fail unless a full refresh o
 
 ci-dags: .env dbt/dbt_packages ## CI: build the Airflow image and fail if a DAG does not import (no Airflow services needed)
 	$(AIRFLOW) build airflow-init
-	$(AIRFLOW) run --rm --no-deps --entrypoint python airflow-init /opt/project/ci/check_dags.py
+	@# Cosmos caches its dbt ls in an Airflow Variable, which needs the metadata database; CI has none.
+	$(AIRFLOW) run --rm --no-deps -e AIRFLOW__COSMOS__ENABLE_CACHE=False \
+		--entrypoint python airflow-init /opt/project/ci/check_dags.py
 
 ci-evidence: .env ## CI: after ci-replay, publish the CI marts to Postgres and validate the Evidence pages on them
 	$(CI_WAREHOUSE) $(MAKE) --no-print-directory marts-publish SIM_CLOCK=$(SIM_CLOCK)
