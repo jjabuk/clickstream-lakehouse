@@ -70,7 +70,7 @@ def to_record(row: RawRow) -> dict:
     return record
 
 
-def produce(rows: list[RawRow], env: Mapping[str, str]) -> int:
+def produce(rows: list[RawRow], env: Mapping[str, str], topic: str = TOPIC) -> int:
     """Send the rows in arrival order and wait until the broker has acknowledged all of them."""
     registry = SchemaRegistryClient(
         {"url": env.get("SCHEMA_REGISTRY_URL", "http://localhost:8081")}
@@ -93,12 +93,12 @@ def produce(rows: list[RawRow], env: Mapping[str, str]) -> int:
         if err is not None:
             errors.append(str(err))
 
-    ctx = SerializationContext(TOPIC, MessageField.VALUE)
+    ctx = SerializationContext(topic, MessageField.VALUE)
     for row in rows:
         record = to_record(row)
         cookie = record.get("cookie_id")
         producer.produce(
-            TOPIC,
+            topic,
             key=key(cookie) if cookie else None,
             value=value(record, ctx),
             on_delivery=on_delivery,

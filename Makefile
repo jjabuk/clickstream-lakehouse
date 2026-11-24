@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := help
 
 .PHONY: help setup hooks lint format format-check test check clean \
-	up down ps logs storage-init reset psql-shop psql-platform catalog-init hosts-check bootstrap test-integration day dbt-deps dbt-debug dbt-build dbt-docs dbt-evaluate warehouse-shell lint-sql fix-sql \
+	up down ps logs storage-init reset psql-shop psql-platform catalog-init hosts-check bootstrap test-integration test-failures day dbt-deps dbt-debug dbt-build dbt-docs dbt-evaluate warehouse-shell lint-sql fix-sql \
 	libduckdb-install stream-up stream-down stream-day airflow-up airflow-down airflow-check airflow-backfill airflow-day marts-publish evidence-install evidence-dev evidence-validate iceberg-snapshots iceberg-files iceberg-partition iceberg-time-travel iceberg-fragment iceberg-compact iceberg-expire \
 	ci-days ci-replay ci-stream-replay marts-compare ci-dags ci-evidence ci-verify-incremental ci-state ci-mode ci-slim ci-logs
 
@@ -65,7 +65,10 @@ test: ## Run unit tests (no stack needed)
 	uv run pytest -m "not integration"
 
 test-integration: ## Run smoke tests against the running stack
-	uv run pytest -m integration
+	uv run pytest -m "integration and not stream_failures"
+
+test-failures: ## Break the stream on purpose (killed sink, races, maintenance, bad messages) and check nothing is lost or doubled; needs make stream-up
+	uv run pytest -m stream_failures
 
 check: lint format-check test dbt-evaluate ## Run the stackless CI checks (lint, format, unit tests, dbt audit)
 

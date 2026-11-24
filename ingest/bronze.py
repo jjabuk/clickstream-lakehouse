@@ -28,7 +28,7 @@ from pyiceberg.catalog import Catalog, load_catalog
 from pyiceberg.expressions import And, GreaterThanOrEqual, LessThan
 from pyiceberg.partitioning import PartitionField, PartitionSpec
 from pyiceberg.schema import Schema
-from pyiceberg.table import Table
+from pyiceberg.table import Table, TableProperties
 from pyiceberg.transforms import DayTransform
 from pyiceberg.types import LongType, NestedField, StringType, TimestamptzType
 
@@ -115,11 +115,24 @@ def lakehouse_catalog(env: Mapping[str, str]) -> Catalog:
     )
 
 
+# PyIceberg retries a commit that lost a race by replaying it on the newer snapshot. A batch from
+# the stream sink is valid only on the head it was read from: replayed, it is written twice. So a
+# lost race must fail, and the writer reads again (ADR 0021).
+NO_COMMIT_RETRY = {TableProperties.COMMIT_NUM_RETRIES: "0"}
+
+
 def ensure_table(catalog: Catalog, namespace: str = NAMESPACE) -> Table:
     catalog.create_namespace_if_not_exists(namespace)
     table = catalog.create_table_if_not_exists(
-        f"{namespace}.{TABLE_NAME}", schema=SCHEMA, partition_spec=PARTITION_SPEC
+        f"{namespace}.{TABLE_NAME}",
+        schema=SCHEMA,
+        partition_spec=PARTITION_SPEC,
+        properties=NO_COMMIT_RETRY,
     )
+    if any(table.properties.get(k) != v for k, v in NO_COMMIT_RETRY.items()):
+        with table.transaction() as tx:  # a table made before the property
+            tx.set_properties(NO_COMMIT_RETRY)
+        table = table.refresh()
     if table.current_snapshot() is None:
         # A branch starts from a snapshot of main, and a table without one cannot be written
         # to a branch at all. An empty commit gives the first audited day its base.

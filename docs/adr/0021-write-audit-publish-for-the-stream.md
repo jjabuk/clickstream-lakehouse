@@ -58,3 +58,35 @@ enough to audit, and who publishes it.
   only the newest snapshots of main and the ref heads: a scheduled `expire --keep 20` removed four
   of a day's five sink commits before publishing, and the fast-forward failed. Expiry now keeps a
   branch's snapshots after the point where it leaves main.
+- **A lost race must fail, never be replayed.** PyIceberg 0.12 retries a commit that lost a race
+  by replaying it on the newer snapshot (`commit.retry.num-retries`, 4 by default). For the sink
+  that writes a batch twice: the batch was read from the offsets of the old head. Bronze sets the
+  property to 0, so the commit fails and the sink reads again from the new head. A new column
+  refreshes the table before the append, so the sink also checks that the branch head is still
+  the one the batch started from. The failure tests found both (below).
+
+## Failure tests
+
+`make test-failures` (`tests/integration/test_stream_failures.py`, on the stack with
+`make stream-up`) breaks the stream at one point per test, each on its own topic and table, and
+checks one invariant: every message of the topic is on the branch head exactly once (by partition
+and offset), the head's offsets are the end of the topic, and main is an ancestor of the branch.
+
+| Failure | Expected, and tested |
+|---|---|
+| the sink fails after reading, before its commit | nothing committed; the same messages are read again |
+| the sink process is killed with SIGKILL at random moments (seeded) | the invariant holds after a last clean run |
+| two sinks commit the same batch | the later commit fails and reads on from the other's |
+| the same, while the batch adds a column | as above (this one wrote the batch twice before the head check) |
+| the topic is deleted and recreated | the sink stops with an error and the branch does not move |
+| expiry while a window waits | the commits stay and the day publishes (the regression of 2026-11-24) |
+| compaction while the branch has unpublished rows | `StreamPending` |
+| a sink commit between compaction's check and its commit | the compaction fails, the sink's rows stay (failed through the commit retry before it was turned off) |
+| publishing a day twice | the second run publishes nothing and rejects nothing |
+| a message that is not Avro | the sink stops on it every time and never skips it; no dead-letter topic, since one broken message in a clickstream is a producer bug to fix, not data to route around |
+
+Not automated, because they stop the services that the dev stack shares: a broker restart (the
+data survives in the Kafka volume) and a Schema Registry outage (producer and sink fail loudly).
+The registry keeps its schemas in the topic `_schemas`, so a lost Kafka volume also loses the
+schema ids that old messages carry: the dev registry was restored once by re-registering them
+in `IMPORT` mode.

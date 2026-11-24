@@ -76,10 +76,10 @@ def _consumer(env: Mapping[str, str]) -> Consumer:
     )
 
 
-def end_offsets(consumer: Consumer) -> dict[int, int]:
-    partitions = consumer.list_topics(TOPIC, timeout=10).topics[TOPIC].partitions
+def end_offsets(consumer: Consumer, topic: str = TOPIC) -> dict[int, int]:
+    partitions = consumer.list_topics(topic, timeout=10).topics[topic].partitions
     return {
-        p: consumer.get_watermark_offsets(TopicPartition(TOPIC, p), timeout=10)[1]
+        p: consumer.get_watermark_offsets(TopicPartition(topic, p), timeout=10)[1]
         for p in partitions
     }
 
@@ -95,12 +95,12 @@ def offsets_at(table: Table, snapshot: Snapshot) -> dict[int, int]:
     return {}
 
 
-def check_not_ahead(reached: dict[int, int], end: dict[int, int]) -> None:
+def check_not_ahead(reached: dict[int, int], end: dict[int, int], topic: str = TOPIC) -> None:
     """The branch cannot have read past the end of the topic, unless the topic was recreated."""
     ahead = {p: (o, end.get(p, 0)) for p, o in reached.items() if o > end.get(p, 0)}
     if ahead:
         raise RuntimeError(
-            f"'{BRANCH}' has read past the end of {TOPIC} (partition: (branch, topic) {ahead}); "
+            f"'{BRANCH}' has read past the end of {topic} (partition: (branch, topic) {ahead}); "
             "was the topic recreated? Its offsets no longer match the branch."
         )
 
@@ -120,12 +120,12 @@ def ensure_branch(table: Table) -> Table:
 # --- the sink ------------------------------------------------------------------------------------
 
 
-def _to_arrow(messages, deserialize) -> pa.Table:
+def _to_arrow(messages, deserialize, topic: str) -> pa.Table:
     rows = []
     now = datetime.now(UTC)
     for m in messages:
-        row = deserialize(m.value(), SerializationContext(TOPIC, MessageField.VALUE))
-        row["_source_file"] = f"kafka://{TOPIC}/{m.partition()}/{m.offset()}"
+        row = deserialize(m.value(), SerializationContext(topic, MessageField.VALUE))
+        row["_source_file"] = f"kafka://{topic}/{m.partition()}/{m.offset()}"
         row["_ingested_at"] = now
         rows.append(row)
     data = pa.Table.from_pylist(rows)
@@ -137,16 +137,18 @@ def _to_arrow(messages, deserialize) -> pa.Table:
     return data
 
 
-def sink_once(table: Table, consumer: Consumer, deserialize, max_rows: int) -> int:
+def sink_once(
+    table: Table, consumer: Consumer, deserialize, max_rows: int, topic: str = TOPIC
+) -> int:
     """Append the next batch from the branch head's offsets. Returns the rows committed."""
     table = table.refresh()
     head = branch_head(table)
     start = offsets_at(table, head)
-    end = end_offsets(consumer)
-    check_not_ahead(start, end)
+    end = end_offsets(consumer, topic)
+    check_not_ahead(start, end, topic)
     if all(start.get(p, 0) >= o for p, o in end.items()):
         return 0
-    consumer.assign([TopicPartition(TOPIC, p, start.get(p, 0)) for p in end])
+    consumer.assign([TopicPartition(topic, p, start.get(p, 0)) for p in end])
     messages, reached = [], dict(start)
     while len(messages) < max_rows:
         batch = consumer.consume(min(500, max_rows - len(messages)), timeout=1)
@@ -159,10 +161,13 @@ def sink_once(table: Table, consumer: Consumer, deserialize, max_rows: int) -> i
             reached[m.partition()] = m.offset() + 1
     if not messages:
         return 0
-    data = _to_arrow(messages, deserialize)
+    data = _to_arrow(messages, deserialize, topic)
     table, _ = evolve_schema(table, data)
     # The branch must still be where the batch started; otherwise the commit fails and the next
-    # round reads again from the new head.
+    # round reads again from the new head. A new column refreshes the table, so check it here
+    # too; the append itself fails on a moved branch (the table has no commit retry).
+    if branch_head(table).snapshot_id != head.snapshot_id:
+        raise CommitFailedException(f"'{BRANCH}' moved while the batch was read")
     table.append(
         conform(data, table),
         branch=BRANCH,
@@ -171,17 +176,23 @@ def sink_once(table: Table, consumer: Consumer, deserialize, max_rows: int) -> i
     return len(messages)
 
 
-def run_sink(env: Mapping[str, str], max_rows: int, interval_s: float) -> None:
-    table = ensure_branch(ensure_table(lakehouse_catalog(env)))
+def run_sink(
+    env: Mapping[str, str],
+    max_rows: int,
+    interval_s: float,
+    topic: str = TOPIC,
+    namespace: str = NAMESPACE,
+) -> None:
+    table = ensure_branch(ensure_table(lakehouse_catalog(env), namespace))
     registry = SchemaRegistryClient(
         {"url": env.get("SCHEMA_REGISTRY_URL", "http://localhost:8081")}
     )
     deserialize = AvroDeserializer(registry)
     consumer = _consumer(env)
-    print(f"sink: {TOPIC} -> {NAMESPACE}.{TABLE_NAME}@{BRANCH}", flush=True)
+    print(f"sink: {topic} -> {namespace}.{TABLE_NAME}@{BRANCH}", flush=True)
     while True:
         try:
-            rows = sink_once(table, consumer, deserialize, max_rows)
+            rows = sink_once(table, consumer, deserialize, max_rows, topic)
         except CommitFailedException as conflict:
             print(f"sink: branch moved, reading again from its head ({conflict})", flush=True)
             continue
@@ -224,10 +235,12 @@ def ahead_of_main(table: Table) -> list[Snapshot]:
     raise RuntimeError(f"main ({main}) is not an ancestor of '{BRANCH}'; it cannot fast-forward")
 
 
-def wait_closed(table: Table, env: Mapping[str, str], timeout_s: float) -> Window:
+def wait_closed(
+    table: Table, env: Mapping[str, str], timeout_s: float, topic: str = TOPIC
+) -> Window:
     consumer = _consumer(env)
     try:
-        end = end_offsets(consumer)
+        end = end_offsets(consumer, topic)
     finally:
         consumer.close()
     deadline = time.monotonic() + timeout_s
@@ -235,7 +248,7 @@ def wait_closed(table: Table, env: Mapping[str, str], timeout_s: float) -> Windo
         table = table.refresh()
         head = branch_head(table)
         reached = offsets_at(table, head)
-        check_not_ahead(reached, end)
+        check_not_ahead(reached, end, topic)
         if all(reached.get(p, 0) >= o for p, o in end.items()):
             ahead = ahead_of_main(table)
             return Window(
@@ -252,9 +265,11 @@ def wait_closed(table: Table, env: Mapping[str, str], timeout_s: float) -> Windo
         time.sleep(2)
 
 
-def publish_day(table: Table, env: Mapping[str, str], day: date, timeout_s: float = 300) -> int:
+def publish_day(
+    table: Table, env: Mapping[str, str], day: date, timeout_s: float = 300, topic: str = TOPIC
+) -> int:
     """Audit the closed window of `day` on `stream` and publish it. Returns the rows published."""
-    window = wait_closed(table, env, timeout_s)
+    window = wait_closed(table, env, timeout_s, topic)
     table = table.refresh()
     in_day = arrival_day_filter(day)
 

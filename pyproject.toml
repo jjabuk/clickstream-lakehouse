@@ -33,4 +33,7 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
-markers = ["integration: needs the local stack running (make bootstrap)"]
+markers = [
+    "integration: needs the local stack running (make bootstrap)",
+    "stream_failures: breaks the stream on purpose; needs the stream profile (make stream-up)",
+]
