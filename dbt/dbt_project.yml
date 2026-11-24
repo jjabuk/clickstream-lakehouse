@@ -37,6 +37,11 @@ vars:
       # The closed funnel is its own model so that its ordering rule has a unit test, and
       # fct_sessions joins it back to the page views on purpose.
       - int_sessions__funnel_steps
+    fct_model_fanout:
+      # The atomic page-view fact feeds several daily and weekly rollups by design (Kimball:
+      # aggregates are built on the atomic fact, not on staging). Evidence reads a Postgres copy
+      # without dbt's logic, so these rollups cannot move into the BI tool.
+      - fct_page_views
 
 models:
   clickstream:

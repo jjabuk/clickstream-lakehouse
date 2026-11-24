@@ -203,3 +203,31 @@ unit_tests:
         - {cookie_id: c1, product_day: '2026-02-01', device: mobile, is_converted_7d: true, converted_at: '2026-02-04 09:00:00+00', is_window_complete: true}
         - {cookie_id: c2, product_day: '2026-02-01', device: mobile, is_converted_7d: false, converted_at: null, is_window_complete: true}
         - {cookie_id: c3, product_day: '2026-02-08', device: desktop, is_converted_7d: false, converted_at: null, is_window_complete: false}
+
+  # ---- product views -------------------------------------------------------------------------
+  - name: fct_product_views_daily__counts_per_product_and_day
+    description: >
+      Only product pages count as views; bots' adds to cart do not count; a product with an add
+      to cart but no view still gets a row; a view at 23:30 UTC belongs to its UTC day.
+    model: fct_product_views_daily
+    given:
+      - input: ref('fct_page_views')
+        rows:
+          - {page_type: product, product_id: 1, session_id: s1, cookie_id: c1, occurred_at: '2026-03-01 10:00:00+00'}
+          - {page_type: product, product_id: 1, session_id: s1, cookie_id: c1, occurred_at: '2026-03-01 10:05:00+00'}
+          - {page_type: product, product_id: 1, session_id: s2, cookie_id: c2, occurred_at: '2026-03-01 23:30:00+00'}
+          - {page_type: home, product_id: null, session_id: s1, cookie_id: c1, occurred_at: '2026-03-01 09:59:00+00'}
+      - input: ref('stg_clickstream__events')
+        rows:
+          - {event_type: add_to_cart, is_bot: false, product_id: 1, cookie_id: c1, occurred_at: '2026-03-01 10:06:00+00'}
+          - {event_type: add_to_cart, is_bot: true, product_id: 1, cookie_id: null, occurred_at: '2026-03-01 10:07:00+00'}
+          - {event_type: add_to_cart, is_bot: false, product_id: 2, cookie_id: c3, occurred_at: '2026-03-02 08:00:00+00'}
+          - {event_type: page_view, is_bot: false, product_id: 1, cookie_id: c1, occurred_at: '2026-03-01 10:00:00+00'}
+      - input: ref('stg_shop__products')
+        rows:
+          - {product_id: 1, category_id: 10}
+          - {product_id: 2, category_id: 20}
+    expect:
+      rows:
+        - {date_key: 20260301, product_id: 1, category_id: 10, page_views: 3, sessions: 2, visitors: 2, add_to_carts: 1}
+        - {date_key: 20260302, product_id: 2, category_id: 20, page_views: 0, sessions: 0, visitors: 0, add_to_carts: 1}
