@@ -42,6 +42,16 @@ clickstream:
           alias: warehouse
           read_only: true
 
+    # make marts-compare (ADR 0005): the dev target, with a second warehouse attached read-only as
+    # `before`, so audit_helper can compare its marts with this one's.
+    compare:
+      <<: *dev
+      attach:
+        - *shop
+        - path: "{{ env_var('DBT_COMPARE_DUCKDB_PATH', 'data/ci/warehouse.duckdb') }}"
+          alias: before
+          read_only: true
+
     # Used by dbt lint (make lint-sql, pre-commit, CI) and dbt_project_evaluator (make
     # dbt-evaluate). Compiling a model renders names and the evaluator reads only the project
     # graph, so neither touches data: no stack, no credentials, no attached databases.

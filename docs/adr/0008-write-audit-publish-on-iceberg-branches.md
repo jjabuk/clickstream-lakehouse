@@ -77,4 +77,5 @@ published.
   has one orchestrator (Airflow, this week), so this is acceptable.
 - **Week 4 (Kafka sink) will need its own WAP story.** The Iceberg sink commits continuously to
   `main`, so the audit moves to a branch-committing sink configuration or to a publish step
-  downstream.
+  downstream. *Done in ADR 0021: the sink commits to the branch `stream`, and the task that
+  delivered a day audits it and fast-forwards `main`.*

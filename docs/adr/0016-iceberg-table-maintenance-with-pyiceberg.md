@@ -75,3 +75,11 @@ the history tells it apart from a load.
 - **Storage is not reclaimed.** Data files of expired snapshots stay on S3 until the table is
   purged. In week 4 the Kafka sink commits often, compaction will rewrite more, and orphan-file
   cleanup may become worth doing.
+
+> **Update (week 4):** compaction and expiry run on a schedule: the Airflow DAG
+> `iceberg_maintenance`, every 30 minutes, `compact` then `expire --keep 20`. Orphan-file removal
+> stays out, for the reason above. The stream sink writes to the branch `stream`, which must stay
+> a descendant of `main` (ADR 0021). Compaction therefore runs only while `stream` is at `main`,
+> skips otherwise, and moves `stream` to the compacted head in the same commit; if the sink
+> commits in between, the commit fails and the next run tries again. Maintenance writes only to
+> bronze, so it may run while dbt builds.

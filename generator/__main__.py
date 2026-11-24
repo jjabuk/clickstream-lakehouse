@@ -17,14 +17,22 @@ def main() -> None:
         "--fault",
         type=Fault,
         choices=list(Fault),
-        help="deliver a broken landing file, to exercise write-audit-publish (ADR 0008)",
+        help="deliver a broken batch, to exercise write-audit-publish (ADR 0008)",
+    )
+    parser.add_argument(
+        "--stream",
+        action="store_true",
+        help="send the events to Kafka instead of writing a landing file (ADR 0005)",
     )
     args = parser.parse_args()
 
-    report = run_day(GeneratorConfig(seed=args.seed), args.date, os.environ, fault=args.fault)
+    report = run_day(
+        GeneratorConfig(seed=args.seed), args.date, os.environ, fault=args.fault, stream=args.stream
+    )
     fault = f" (fault: {args.fault})" if args.fault else ""
+    dest = report.landing_path if args.stream else f"s3://{report.landing_path}"
     print(
-        f"{report.day}: {report.events} events -> s3://{report.landing_path}{fault}; "
+        f"{report.day}: {report.events} events -> {dest}{fault}; "
         f"{report.orders_created} new orders, {report.status_changes} order status changes"
     )
 

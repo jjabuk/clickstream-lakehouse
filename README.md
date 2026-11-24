@@ -13,8 +13,10 @@ deterministic (`--seed`).
 ```mermaid
 flowchart LR
   gen[generator<br/>--seed] -->|JSONL per day| s3[(Garage S3<br/>landing)]
+  gen -->|Avro events| kafka[(Kafka<br/>Schema Registry)]
   gen -->|orders, users| shop[(Postgres<br/>shop)]
   s3 -->|PyIceberg<br/>write-audit-publish| bronze[(Iceberg bronze<br/>Lakekeeper REST)]
+  kafka -->|stream sink, PyIceberg<br/>branch stream, audit| bronze
   bronze -->|DuckDB iceberg| dbt[dbt-duckdb<br/>staging → marts]
   shop --> dbt
   dbt --> wh[(warehouse.duckdb)]
@@ -28,6 +30,12 @@ flowchart LR
 - **Write-audit-publish.** Each arrival day is written to a branch `wap_YYYYMMDD` and audited:
   volume, duplicate deliveries, unknown event types and missing URLs. Only then is `main`
   fast-forwarded. A faulty batch stays on its branch and nothing downstream sees it (ADR 0008).
+- **Kafka.** The same events can arrive as a stream instead (`make stream-up`): the generator
+  produces Avro to Kafka with the Schema Registry, and a small sink appends them with PyIceberg to
+  the branch `stream`, the Kafka offsets in each snapshot. A day is audited once the sink has
+  committed the whole topic, then `main` is fast-forwarded (ADR 0005, 0006, 0021). dbt does not
+  change: the marts built from the stream equal those built from files (`make marts-compare`).
+  Airflow compacts the sink's small files on a schedule (ADR 0016).
 - **dbt v2** builds staging, intermediate and marts in a DuckDB file (ADR 0024). Incremental models merge with
   a lookback window for late events (ADR 0004). `dim_user` is SCD2 from a snapshot. Tests use
   dbt-utils and dbt-expectations, plus unit tests for the sessionization, the SCD2 join and the
@@ -39,7 +47,7 @@ flowchart LR
 - **Evidence** reads a Postgres copy of the marts, swapped in one transaction after each build
   (ADR 0018).
 
-Week by week, Kafka with Schema Registry, Debezium CDC and Feast come next. Stage 2 moves the same
+Week by week, Debezium CDC and Feast come next. Stage 2 moves the same
 dbt project to Databricks.
 
 ## Data model
@@ -87,6 +95,20 @@ The dashboard is at http://localhost:3000. With Airflow (`make airflow-up`, UI a
 http://localhost:8088), days are replayed with `make airflow-backfill FROM=2026-02-01
 TO=2026-02-07`. A broken delivery is `make day DATE=... FAULT=truncated` (or `make airflow-day
 DAY=... FAULT=truncated`). `make help` lists every command.
+
+### Through Kafka
+
+```bash
+make stream-up
+```
+```bash
+make stream-day DATE=2026-01-11
+```
+
+Redpanda Console shows the topic, the decoded events and the schemas at http://localhost:8090.
+`make stream-day DATE=... FAULT=duplicated` delivers a broken day: the audit rejects it, tags it
+`rejected_YYYYMMDD` and resets the branch, and `main` does not change; the same command without
+`FAULT` is the redelivery. In Airflow: `make airflow-day DAY=... INGEST=stream`.
 
 ## Iceberg operations
 
@@ -206,6 +228,8 @@ docs/adr/       architecture decision records
 | [0002](docs/adr/0002-rest-catalog-lakekeeper.md) | REST catalog: Lakekeeper |
 | [0003](docs/adr/0003-pyiceberg-writes-duckdb-reads.md) | PyIceberg writes, DuckDB reads |
 | [0004](docs/adr/0004-late-data-lookback-window.md) | Late data: a lookback window in dbt |
+| [0005](docs/adr/0005-kafka-ingest-without-touching-dbt.md) | Kafka ingest without touching dbt, with a sink of our own |
+| [0006](docs/adr/0006-avro-and-schema-registry.md) | Avro with the Schema Registry, BACKWARD compatibility |
 | [0008](docs/adr/0008-write-audit-publish-on-iceberg-branches.md) | Write-audit-publish on Iceberg branches |
 | [0010](docs/adr/0010-object-storage-garage.md) | Object storage: Garage |
 | [0011](docs/adr/0011-separate-postgres-instances.md) | Separate Postgres instances for the shop and the platform |
@@ -217,5 +241,6 @@ docs/adr/       architecture decision records
 | [0017](docs/adr/0017-airflow-with-cosmos-watcher-mode.md) | Airflow with Cosmos in watcher mode |
 | [0018](docs/adr/0018-evidence-studio-on-a-postgres-serving-copy.md) | Evidence on a Postgres copy of the marts |
 | [0019](docs/adr/0019-stay-on-dbt-core-1-12-for-now.md) | Stay on dbt Core 1.12 until v2 runs elementary on DuckDB (superseded by 0024) |
+| [0021](docs/adr/0021-write-audit-publish-for-the-stream.md) | Write-audit-publish for the stream |
 | [0023](docs/adr/0023-semantic-layer-in-dbt-with-metricflow.md) | The semantic layer in dbt (MetricFlow) |
 | [0024](docs/adr/0024-dbt-v2-without-elementary.md) | dbt v2, without elementary |

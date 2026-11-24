@@ -1,4 +1,7 @@
 packages:
+- package: dbt-labs/audit_helper
+  name: audit_helper
+  version: 0.14.0
 - package: godatadriven/dbt_date
   name: dbt_date
   version: 0.21.0
@@ -11,4 +14,4 @@ packages:
 - package: dbt-labs/dbt_utils
   name: dbt_utils
   version: 1.4.1
-sha1_hash: 761d9e114b0090617300911f7a552384f47e43da
+sha1_hash: 1f917fb6069199d2f817455fc40cd937e8dc2370

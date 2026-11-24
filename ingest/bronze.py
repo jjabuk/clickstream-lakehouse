@@ -187,7 +187,7 @@ def read_landing(fs: pafs.S3FileSystem, path: str) -> pa.Table:
     )
 
 
-def _conform(data: pa.Table, table: Table) -> pa.Table:
+def conform(data: pa.Table, table: Table) -> pa.Table:
     """Arrange `data` in the table's column order, filling columns the file lacks with NULL."""
     target = table.schema().as_arrow()
     columns = [
@@ -197,6 +197,17 @@ def _conform(data: pa.Table, table: Table) -> pa.Table:
         for f in target
     ]
     return pa.Table.from_arrays(columns, schema=target)
+
+
+def evolve_schema(table: Table, data: pa.Table) -> tuple[Table, list[pa.Field]]:
+    """Add the columns `data` has and the table lacks (schema drift, e.g. utm_campaign)."""
+    known = set(table.schema().column_names)
+    new_fields = [f for f in data.schema if f.name not in known]
+    if new_fields:
+        with table.update_schema() as update:
+            update.union_by_name(pa.schema(new_fields))
+        table = table.refresh()
+    return table, new_fields
 
 
 def load_day(
@@ -209,12 +220,7 @@ def load_day(
     table = ensure_table(catalog, namespace)
     data = read_landing(fs, path)
 
-    known = set(table.schema().column_names)
-    new_fields = [f for f in data.schema if f.name not in known]
-    if new_fields:
-        with table.update_schema() as update:
-            update.union_by_name(pa.schema(new_fields))
-        table = catalog.load_table(f"{namespace}.{TABLE_NAME}")
+    table, new_fields = evolve_schema(table, data)
 
     start = datetime.combine(day, time.min, tzinfo=UTC)
     if data.num_rows and not (
@@ -235,7 +241,7 @@ def load_day(
     with warnings.catch_warnings():
         # The first load of a day deletes nothing, which PyIceberg reports as a warning.
         warnings.filterwarnings("ignore", message="Delete operation did not match any records")
-        table.overwrite(_conform(data, table), overwrite_filter=in_day, branch=branch)
+        table.overwrite(conform(data, table), overwrite_filter=in_day, branch=branch)
     table = table.refresh()
 
     # Audit: what the branch now holds for the day, against the volume of the days before.

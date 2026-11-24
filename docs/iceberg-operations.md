@@ -88,8 +88,9 @@ The 124 rows are what dbt's lookback window (ADR 0004) folds into 2026-02-06's s
 
 ## 4. Compaction
 
-The daily load writes one file per day, so the small files of a streaming sink (week 4) are
-simulated. `make iceberg-fragment DAY=2026-02-05 PARTS=24` rewrites the day as 24 appends:
+The daily load writes one file per day, so the small files of a streaming sink are simulated
+here. (Since week 4 the stream sink leaves them for real, and the Airflow DAG
+`iceberg_maintenance` compacts them on a schedule, ADR 0016.) `make iceberg-fragment DAY=2026-02-05 PARTS=24` rewrites the day as 24 appends:
 
 | arrival_day | spec_id | files | records | avg KiB |
 |---|---|---|---|---|

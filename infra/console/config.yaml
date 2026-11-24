@@ -1,0 +1,6 @@
+# Redpanda Console (ADR 0005): topics, messages decoded with their Avro schemas, consumer groups.
+kafka:
+  brokers: ["kafka:19092"]
+schemaRegistry:
+  enabled: true
+  urls: ["http://schema-registry:8081"]

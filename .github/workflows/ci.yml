@@ -1,11 +1,13 @@
 # CI (ADR 0015). Two jobs:
 #
 #   check  no stack: ruff, dbt lint, unit tests, dbt_project_evaluator checks (`make check`).
-#   dbt    the real stack in docker compose, seeded synthetic days, then one of:
+#   dbt    the real stack in docker compose, seeded synthetic days, the Airflow DAGs' import,
+#          then one of:
 #            full  (main, manual runs, and PRs that touch incremental logic or the data): replay
 #                  the CI days one by one with a dbt build after each, then verify that a full
-#                  refresh of the incremental models changes nothing. On main the result is
-#                  uploaded as the production state that pull requests defer to.
+#                  refresh of the incremental models changes nothing, and validate the Evidence
+#                  pages on the published marts. On main the result is uploaded as the
+#                  production state that pull requests defer to.
 #            slim  (other PRs): build only state:modified+ and defer every other ref to the
 #                  production state of the last green main run.
 #
@@ -67,6 +69,8 @@ jobs:
       - run: make bootstrap
       - name: Integration tests (generator and ingest on the stack)
         run: make test-integration
+      - name: Airflow DAGs import
+        run: make ci-dags
 
       - name: Find the production state of main
         id: prod
@@ -106,6 +110,9 @@ jobs:
       - name: Incremental result equals a full refresh
         if: steps.mode.outputs.mode == 'full'
         run: make ci-verify-incremental
+      - name: Evidence pages validate against the CI marts
+        if: steps.mode.outputs.mode == 'full'
+        run: make ci-evidence
 
       - name: Collect the production state
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'

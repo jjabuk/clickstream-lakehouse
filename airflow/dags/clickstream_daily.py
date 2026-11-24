@@ -3,10 +3,15 @@
 A run handles one arrival day D, the same work as `make day DATE=D` followed by `make dbt-build`
 (ADR 0017), then `make marts-publish`:
 
-1. `load_day`: the generator writes D's landing file and orders, the ingest loads it to bronze on
-   a branch, audits it and publishes it (ADR 0008). A failed audit fails this task, so dbt never
-   runs on a day `main` does not have. `make airflow-day DAY=... FAULT=truncated` breaks the first
-   delivery on purpose; clearing the failed task (a retry) is the source's corrected redelivery.
+1. `load_day`: the generator writes D's orders and its clickstream, which reaches bronze through
+   write-audit-publish in one of two ways (param `ingest`):
+   - `files` (default): a landing file, loaded on a branch, audited and published (ADR 0008);
+   - `stream`: Avro events to Kafka; the sink appends them to the branch `stream`, and the task
+     waits for the closed window, audits it and fast-forwards main (ADR 0021). It needs
+     `make stream-up`.
+   A failed audit fails this task, so dbt never runs on a day `main` does not have.
+   `make airflow-day DAY=... FAULT=truncated` breaks the first delivery on purpose; clearing the
+   failed task (a retry) is the source's corrected redelivery.
 2. `dbt`: one `dbt build` (Cosmos watcher mode, dbt v2 as a subprocess, ADR 0024), with a task
    per model that follows its status. DuckDB allows one writer per file, so the build cannot be
    split into parallel dbt processes.
@@ -90,6 +95,11 @@ with DAG(
             description="a manual run's arrival day, equal to its logical date",
         ),
         "seed": Param(42, type="integer", description="generator seed"),
+        "ingest": Param(
+            "files",
+            enum=["files", "stream"],
+            description="landing files, or Kafka and the stream sink (needs make stream-up)",
+        ),
         "fault": Param(
             None,
             type=["null", "string"],
@@ -99,16 +109,28 @@ with DAG(
     },
     tags=["clickstream"],
 ) as dag:
-    replays_only = ShortCircuitOperator(task_id="replays_only", python_callable=_is_replay)
+    replays_only = ShortCircuitOperator(
+        task_id="replays_only",
+        python_callable=_is_replay,
+        # A scheduled run must skip at once. Waiting for the previous logical date, it would wait
+        # for a replay of an earlier simulated day that cannot start while this run holds the
+        # only active slot. load_day keeps the order among the replays.
+        depends_on_past=False,
+    )
 
     load_day = BashOperator(
         task_id="load_day",
         cwd=str(PROJECT),
         bash_command=(
             f"set -e; {PYTHON} -m generator --date {DAY} --seed {{{{ params.seed }}}}"
+            "{% if params.ingest == 'stream' %} --stream{% endif %}"
             # Only the first try: a retry is the corrected redelivery.
             "{% if params.fault and ti.try_number == 1 %} --fault {{ params.fault }}{% endif %}; "
+            "{% if params.ingest == 'stream' %}"
+            f"{PYTHON} -m ingest.stream publish --date {DAY}; "
+            "{% else %}"
             f"{PYTHON} -m ingest --date {DAY}; "
+            "{% endif %}"
             f"{PYTHON} ci/advance_clock.py {DAY} data/simulated_now"
         ),
     )

@@ -7,8 +7,8 @@ during the load (`ingest.bronze`); this module covers the rest:
   files keep their spec, new writes use the new one, and readers prune on both;
 - **time travel:** the table as it was before later arrival days brought late events;
 - **compaction:** PyIceberg 0.12 has no `rewrite_data_files`, so a fragmented arrival day is
-  rewritten in one overwrite. `fragment` produces such a day on purpose, the way a streaming
-  sink committing every few minutes would (week 4);
+  rewritten in one overwrite. The stream sink leaves such days (a file per commit); `fragment`
+  produces one on purpose. The Airflow DAG `iceberg_maintenance` compacts on a schedule;
 - **snapshot expiration:** metadata only. PyIceberg deletes no files and Lakekeeper does not
   either, so the files only expired snapshots used are reported, not removed.
 
@@ -28,10 +28,12 @@ import pyarrow as pa
 import pyarrow.compute as pc
 from pyiceberg.table import Table
 from pyiceberg.table.snapshots import Snapshot, ancestors_of
+from pyiceberg.table.update.snapshot import ManageSnapshots
 from pyiceberg.transforms import DayTransform, HourTransform
 
 from ingest.bronze import NAMESPACE, TABLE_NAME, arrival_day_filter, lakehouse_catalog
 from ingest.reader import lakehouse_duckdb
+from ingest.stream import BRANCH as STREAM_BRANCH
 
 GRAINS = {"day": DayTransform(), "hour": HourTransform()}
 SOURCE_COLUMN = "server_ts"
@@ -116,17 +118,31 @@ def _files_per_day(table: Table) -> dict[date, int]:
     return counts
 
 
-def compact(table: Table, days: Sequence[date] | None = None) -> list[Compaction]:
+class StreamPending(Exception):
+    """The stream sink's branch holds rows that are not published yet; compaction waits."""
+
+
+def compact(
+    table: Table, days: Sequence[date] | None = None, follow: str = STREAM_BRANCH
+) -> list[Compaction]:
     """Rewrite each fragmented arrival day (or the given ones) as one overwrite, in one commit.
 
     The rows are read back and written unchanged, `_ingested_at` included, into as few files as
     the current spec allows. Unlike Spark's `rewrite_data_files`, which commits a `replace`, this
     commits an `overwrite`: a reader that follows snapshots incrementally would see the day
     change. dbt reads bronze by `server_ts`, not by snapshot, so it is unaffected.
+
+    The stream sink writes to the branch `follow`, which must stay a descendant of main so that
+    publishing it is a fast-forward (ADR 0021). So compaction runs only while that branch is at
+    main, and moves it to the compacted head in the same commit. If the sink commits in between,
+    the whole commit fails and the next run tries again.
     """
     days = list(days) if days is not None else fragmented_days(data_files(table))
     if not days:
         return []
+    branch = table.refs().get(follow)
+    if branch is not None and branch.snapshot_id != table.current_snapshot().snapshot_id:
+        raise StreamPending(f"'{follow}' has rows that are not published yet")
     before = _files_per_day(table)
     batches = {day: table.scan(row_filter=arrival_day_filter(day)).to_arrow() for day in days}
     with table.transaction() as tx:
@@ -136,6 +152,9 @@ def compact(table: Table, days: Sequence[date] | None = None) -> list[Compaction
                 overwrite_filter=arrival_day_filter(day),
                 snapshot_properties={OPERATION_PROPERTY: "compaction"},
             )
+        if branch is not None:
+            head = tx.table_metadata.current_snapshot_id
+            ManageSnapshots(tx).create_branch(head, follow).commit()
     after = _files_per_day(table.refresh())
     return [Compaction(day, before[day], after[day]) for day in days]
 
@@ -373,7 +392,11 @@ def main() -> None:
         files = fragment(table, args.day, args.parts)
         print(f"{args.day}: rewritten as {args.parts} appends, {files} data files")
     elif args.command == "compact":
-        done = compact(table, [args.day] if args.day else None)
+        try:
+            done = compact(table, [args.day] if args.day else None)
+        except StreamPending as pending:
+            print(f"compaction skipped: {pending}")
+            return
         for c in done:
             print(f"{c.day}: {c.files_before} -> {c.files_after} data files")
         if not done:

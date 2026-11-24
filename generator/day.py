@@ -1,7 +1,8 @@
-"""Apply one day to the source systems: the JSONL landing file and the shop's Postgres.
+"""Apply one day to the source systems: the clickstream and the shop's Postgres.
 
-Loading the landing file into Iceberg is the ingest step (`python -m ingest`), kept separate on
-purpose: it is the part that is replaced by Kafka in week 4, while this part stays.
+The clickstream goes to one of two places. The default is a JSONL landing file, which
+`python -m ingest` loads into Iceberg. With `stream=True` the events go to Kafka instead, and the
+Iceberg sink writes them (ADR 0005). The orders in Postgres are the same either way.
 """
 
 from collections.abc import Mapping
@@ -13,6 +14,7 @@ from generator.batch import build_batch, simulate_day, to_jsonl
 from generator.catalog import build_catalog
 from generator.config import GeneratorConfig
 from generator.faults import Fault, apply_fault
+from generator.stream import TOPIC, produce
 from generator.visitors import build_visitor_pool
 from ingest import landing
 
@@ -34,6 +36,7 @@ def run_day(
     prefix: str = landing.DEFAULT_PREFIX,
     pg_schema: str | None = None,
     fault: Fault | None = None,
+    stream: bool = False,
 ) -> DayReport:
     if day < config.epoch:
         raise ValueError(f"{day} is before the start of the simulated world ({config.epoch})")
@@ -41,8 +44,12 @@ def run_day(
     pool = build_visitor_pool(config)
 
     rows = apply_fault(build_batch(config, catalog, pool, day), fault)
-    path = landing.landing_path(env, day, prefix)
-    landing.write(landing.filesystem(env), path, to_jsonl(rows))
+    if stream:
+        produce(rows, env)
+        path = f"kafka://{TOPIC}"
+    else:
+        path = landing.landing_path(env, day, prefix)
+        landing.write(landing.filesystem(env), path, to_jsonl(rows))
 
     orders = simulate_day(config, catalog, pool, day).orders
     with shop_db.connect(env, pg_schema) as conn:

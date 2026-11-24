@@ -2,8 +2,8 @@
 
 .PHONY: help setup hooks lint format format-check test check clean \
 	up down ps logs storage-init reset psql-shop psql-platform catalog-init hosts-check bootstrap test-integration day dbt-deps dbt-debug dbt-build dbt-docs dbt-evaluate warehouse-shell lint-sql fix-sql \
-	libduckdb-install airflow-up airflow-down airflow-check airflow-backfill airflow-day marts-publish evidence-install evidence-dev evidence-validate iceberg-snapshots iceberg-files iceberg-partition iceberg-time-travel iceberg-fragment iceberg-compact iceberg-expire \
-	ci-days ci-replay ci-verify-incremental ci-state ci-mode ci-slim ci-logs
+	libduckdb-install stream-up stream-down stream-day airflow-up airflow-down airflow-check airflow-backfill airflow-day marts-publish evidence-install evidence-dev evidence-validate iceberg-snapshots iceberg-files iceberg-partition iceberg-time-travel iceberg-fragment iceberg-compact iceberg-expire \
+	ci-days ci-replay ci-stream-replay marts-compare ci-dags ci-evidence ci-verify-incremental ci-state ci-mode ci-slim ci-logs
 
 -include .env
 export
@@ -79,11 +79,11 @@ clean: ## Remove caches
 up: .env ## Start the local stack and wait until it is healthy
 	$(COMPOSE) up -d --wait
 
-down: ## Stop the stack, Airflow included (data volumes are kept)
-	$(COMPOSE) --profile airflow down
+down: ## Stop the stack, Kafka and Airflow included (data volumes are kept)
+	$(COMPOSE) --profile stream --profile airflow down
 
 ps: ## Show service status
-	$(COMPOSE) --profile airflow ps
+	$(COMPOSE) --profile stream --profile airflow ps
 
 logs: ## Tail logs (SERVICE=name for one service)
 	$(COMPOSE) logs -f --tail=100 $(SERVICE)
@@ -114,6 +114,23 @@ day: .env ## Generate one day and load it through write-audit-publish: make day 
 	@test -n "$(DATE)" || { echo "usage: make day DATE=YYYY-MM-DD [SEED=42] [FAULT=...]"; exit 1; }
 	uv run python -m generator --date $(DATE) --seed $(SEED) $(if $(FAULT),--fault $(FAULT))
 	uv run python -m ingest --date $(DATE)
+	@python3 ci/advance_clock.py $(DATE) $(SIM_CLOCK)
+
+# --- Streaming ingest (ADR 0005, 0021) --------------------------------------------------------
+# A compose profile, like Airflow: `make up`, the tests and CI load files. The sink appends the
+# topic to the branch `stream` of bronze; `stream-day` audits the day there and fast-forwards main.
+STREAM = $(COMPOSE) --profile stream
+
+stream-up: .env ## Stream: start Kafka, Schema Registry, the bronze sink and Console (http://localhost:8090)
+	$(STREAM) up -d --build --wait
+
+stream-down: ## Stream: stop Kafka and the sink, keep the rest of the stack and the topic
+	$(STREAM) stop console stream-sink schema-registry kafka
+
+stream-day: .env ## Stream: send one day to Kafka, then audit and publish it from the sink's branch: make stream-day DATE=2026-01-10 [SEED=42] [FAULT=...]
+	@test -n "$(DATE)" || { echo "usage: make stream-day DATE=YYYY-MM-DD [SEED=42] [FAULT=...]"; exit 1; }
+	uv run python -m generator --stream --date $(DATE) --seed $(SEED) $(if $(FAULT),--fault $(FAULT))
+	uv run python -m ingest.stream publish --date $(DATE)
 	@python3 ci/advance_clock.py $(DATE) $(SIM_CLOCK)
 
 # --- Iceberg operations on bronze (ADR 0016) ---------------------------------------------------
@@ -157,17 +174,18 @@ airflow-down: ## Airflow: stop its services, keep the rest of the stack
 airflow-check: ## Airflow: fail if a DAG does not import
 	@$(AIRFLOW_CLI) dags list-import-errors -o plain | tee /dev/stderr | grep -q "No data found"
 
-airflow-backfill: ## Airflow: replay arrival days FROM..TO, one after another: make airflow-backfill FROM=2026-02-08 TO=2026-02-10
+airflow-backfill: ## Airflow: replay arrival days FROM..TO, one after another: make airflow-backfill FROM=2026-02-08 TO=2026-02-10 [INGEST=stream]
 	@test -n "$(FROM)" -a -n "$(TO)" || { echo "usage: make airflow-backfill FROM=YYYY-MM-DD TO=YYYY-MM-DD"; exit 1; }
 	@# A paused DAG queues backfill runs without starting them; scheduled runs are skipped by the DAG.
 	$(AIRFLOW_CLI) dags unpause --yes clickstream_daily
-	$(AIRFLOW_CLI) backfill create --dag-id clickstream_daily --from-date $(FROM) --to-date $(TO) --max-active-runs 1 --reprocess-behavior failed
+	$(AIRFLOW_CLI) backfill create --dag-id clickstream_daily --from-date $(FROM) --to-date $(TO) --max-active-runs 1 --reprocess-behavior failed \
+		--dag-run-conf '{"ingest": "$(or $(INGEST),files)"}'
 
-airflow-day: ## Airflow: run one arrival day by hand: make airflow-day DAY=2026-02-11 [FAULT=truncated|duplicated|bad_event_type] (a retry redelivers it fixed)
+airflow-day: ## Airflow: run one arrival day by hand: make airflow-day DAY=2026-02-11 [FAULT=truncated|duplicated|bad_event_type] [INGEST=stream] (a retry redelivers it fixed)
 	@test -n "$(DAY)" || { echo "usage: make airflow-day DAY=YYYY-MM-DD [FAULT=...]"; exit 1; }
 	$(AIRFLOW_CLI) dags unpause --yes clickstream_daily
 	$(AIRFLOW_CLI) dags trigger clickstream_daily --logical-date $(DAY)T00:00:00+00:00 \
-		--conf '{"day": "$(DAY)"$(if $(FAULT),$(comma) "fault": "$(FAULT)")}'
+		--conf '{"day": "$(DAY)", "ingest": "$(or $(INGEST),files)"$(if $(FAULT),$(comma) "fault": "$(FAULT)")}'
 
 dbt-deps: ## Install the dbt packages (versions pinned in dbt/packages.yml)
 	$(DBT) deps $(DBT_ARGS)
@@ -240,10 +258,35 @@ ci-replay: .env dbt/dbt_packages ## CI: from an empty warehouse, load each CI da
 	done
 	$(CI_WAREHOUSE) $(DBT) test $(DBT_ARGS) --select test_type:unit
 
+# The ingest swap (ADR 0005): the same CI days through Kafka and the stream sink, into a warehouse
+# of their own. Run it on an empty stack with `make stream-up`, like ci-replay; then
+# `make marts-compare` must find every mart identical to the one ci-replay built from files.
+STREAM_DIR := data/stream
+
+ci-stream-replay: .env dbt/dbt_packages ## CI: from an empty warehouse, stream each CI day (make stream-up) and dbt build after it
+	rm -rf $(STREAM_DIR) && mkdir -p $(STREAM_DIR)
+	@for d in $(CI_DATES); do \
+		$(MAKE) --no-print-directory stream-day DATE=$$d SEED=$(SEED) SIM_CLOCK=$(STREAM_DIR)/simulated_now && \
+		DBT_DUCKDB_PATH=$(STREAM_DIR)/warehouse.duckdb $(DBT) build $(DBT_ARGS) --exclude-resource-type unit_test || exit 1; \
+	done
+
+marts-compare: .env dbt/dbt_packages ## Compare every mart of two warehouses with audit_helper: make marts-compare [BEFORE=data/ci/warehouse.duckdb] [AFTER=data/stream/warehouse.duckdb]
+	DBT_DUCKDB_PATH=$(or $(AFTER),$(STREAM_DIR)/warehouse.duckdb) DBT_COMPARE_DUCKDB_PATH=$(or $(BEFORE),$(CI_DIR)/warehouse.duckdb) \
+		$(DBT) run-operation compare_marts $(DBT_ARGS) --target compare
+
 ci-verify-incremental: .env ## CI: after ci-replay, fail unless a full refresh of the incremental models changes nothing
 	cp $(CI_DIR)/warehouse.duckdb $(CI_DIR)/incremental.duckdb
 	$(CI_WAREHOUSE) $(DBT) run $(DBT_ARGS) --full-refresh --select config.materialized:incremental+
 	uv run python ci/compare_warehouses.py $(CI_DIR)/incremental.duckdb $(CI_DIR)/warehouse.duckdb
+
+ci-dags: .env dbt/dbt_packages ## CI: build the Airflow image and fail if a DAG does not import (no Airflow services needed)
+	$(AIRFLOW) build airflow-init
+	$(AIRFLOW) run --rm --no-deps --entrypoint python airflow-init /opt/project/ci/check_dags.py
+
+ci-evidence: .env ## CI: after ci-replay, publish the CI marts to Postgres and validate the Evidence pages on them
+	$(CI_WAREHOUSE) $(MAKE) --no-print-directory marts-publish SIM_CLOCK=$(SIM_CLOCK)
+	evidence/install_cli.sh
+	$(MAKE) --no-print-directory evidence-validate
 
 ci-state: ## CI: collect the production state (manifest and warehouse) that pull requests defer to
 	rm -rf $(CI_STATE) && mkdir -p $(CI_STATE)
@@ -261,4 +304,4 @@ ci-logs: .env ## CI: print the last lines of every service log (no follow, for f
 	$(COMPOSE) logs --no-color --tail=200
 
 reset: .env ## Stop the stack and DELETE all data volumes
-	$(COMPOSE) --profile airflow down -v
+	$(COMPOSE) --profile stream --profile airflow down -v

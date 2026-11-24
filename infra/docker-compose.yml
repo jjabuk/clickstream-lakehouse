@@ -101,6 +101,121 @@ services:
       retries: 12
       start_period: 5s
 
+  # --- Streaming ingest (ADR 0005), only with `--profile stream` (make stream-up) -------------
+  # One Kafka broker in KRaft mode, the Schema Registry for the Avro events (ADR 0006), the sink
+  # that writes them to bronze, and Redpanda Console to look at topics and schemas. Containers use
+  # kafka:19092; the host (the generator, `make stream-day`) uses 127.0.0.1:9092.
+  kafka:
+    image: apache/kafka:4.4.0
+    profiles: [stream]
+    restart: unless-stopped
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENERS: INTERNAL://:19092,HOST://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:19092,HOST://127.0.0.1:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,HOST:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      # The image's default is under /tmp, which a recreated container loses; the topic must
+      # survive, because bronze's branch records offsets into it.
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      # One broker: every internal topic has one replica.
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      # Every topic is created on purpose (kafka-init), not by the first client that names it.
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    ports:
+      - "127.0.0.1:9092:9092"
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null"]
+      interval: 5s
+      timeout: 10s
+      retries: 12
+      start_period: 10s
+
+  # The event topic, created once with its partitions and kept forever: the stream is the replay
+  # log of the shop's clicks, as the landing files are.
+  kafka-init:
+    image: apache/kafka:4.4.0
+    profiles: [stream]
+    restart: "no"
+    command:
+      - sh
+      - -c
+      - /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 --create --if-not-exists
+        --topic clickstream.events --partitions 3 --replication-factor 1 --config retention.ms=-1
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+  schema-registry:
+    image: confluentinc/cp-schema-registry:8.4.1
+    profiles: [stream]
+    restart: unless-stopped
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: kafka:19092
+      # The default, stated: a new schema must read data written with the previous one (ADR 0006).
+      SCHEMA_REGISTRY_SCHEMA_COMPATIBILITY_LEVEL: backward
+    ports:
+      - "127.0.0.1:8081:8081"
+    healthcheck:
+      # The Confluent images have no curl: a plain HTTP request over bash's /dev/tcp.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/8081 && printf 'GET /subjects HTTP/1.0\\r\\n\\r\\n' >&3 && head -1 <&3 | grep -q ' 200 '"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+  # Appends the topic to bronze's branch `stream` with PyIceberg (ingest/stream.py). The
+  # Kafka offsets are committed with the rows, in the Iceberg snapshot.
+  stream-sink:
+    build:
+      context: ..
+      dockerfile: infra/stream-sink/Dockerfile
+    image: clickstream-lakehouse/stream-sink:latest
+    profiles: [stream]
+    restart: unless-stopped
+    env_file: ../.env
+    environment:
+      LAKEKEEPER_URL: http://lakekeeper:8181
+      KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+      SCHEMA_REGISTRY_URL: http://schema-registry:8081
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ..:/opt/project:ro
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      schema-registry:
+        condition: service_healthy
+      lakekeeper:
+        condition: service_healthy
+
+  console:
+    image: docker.redpanda.com/redpandadata/console:v3.15.0
+    profiles: [stream]
+    restart: unless-stopped
+    environment:
+      CONFIG_FILEPATH: /etc/console/config.yaml
+    volumes:
+      - ./console/config.yaml:/etc/console/config.yaml:ro
+    ports:
+      - "127.0.0.1:8090:8080" # 8080 and 8088 are taken by the dbt docs and Airflow
+    depends_on:
+      schema-registry:
+        condition: service_healthy
+
   # --- Airflow (ADR 0017), only with `--profile airflow` (make airflow-up) --------------------
   # Its metadata database is `airflow` on postgres-platform (ADR 0011), created here because
   # the instance's init scripts run only on an empty volume.
@@ -152,6 +267,8 @@ services:
       DBT_ENGINE_NO_WARN_SEMANTIC_MANIFEST_VALIDATION: "1"
       DBT_DUCKDB_PATH: /opt/project/data/warehouse.duckdb
       LAKEKEEPER_URL: http://lakekeeper:8181
+      KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+      SCHEMA_REGISTRY_URL: http://schema-registry:8081
       SHOP_POSTGRES_HOST: postgres-shop
       SHOP_POSTGRES_PORT: "5432"
     volumes:
@@ -220,6 +337,7 @@ services:
 
 volumes:
   airflow-logs:
+  kafka-data:
   garage-meta:
   garage-data:
   postgres-shop-data:

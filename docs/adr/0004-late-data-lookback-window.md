@@ -49,3 +49,8 @@ dbt absorbs it with a lookback window, set by `lookback_hours` (default 48):
 - Sessions are assumed shorter than `session_context_hours` (12 h); a test guards it.
 - In week 4 the same events arrive through Kafka. If the sink delivers them the same way, dbt
   stays unchanged, which is what the audit-helper comparison in that week verifies.
+
+> **Update (week 4, ADR 0005, 0021):** the stream does not handle lateness. The sink appends
+> events on their arrival day, and the stream's audit window is that arrival day, not event time.
+> A watermark on event time would hold each window open for the 48 h of lateness. Late events
+> reach bronze as they do from files, and the lookback window in dbt handles them unchanged.
