@@ -39,7 +39,8 @@ The operations live in `ingest/maintenance.py` and run by hand through `make ice
   The ingest never fragments a day (one overwrite per day), so `make iceberg-fragment` rewrites a
   day as many appends, the way a streaming sink committing every few minutes would.
 - **Snapshot expiration** (`make iceberg-expire KEEP=5`) keeps the newest `KEEP` snapshots of main
-  and every branch or tag head. Everything else goes, including snapshots no ref reaches, such
+  and every branch or tag head, plus a branch's commits that main does not have yet (the stream
+  waiting for its audit, ADR 0021). Everything else goes, including snapshots no ref reaches, such
   as those of a failed WAP batch. A count is used rather than an age because commits happen
   minutes apart in a demo. The command reports how many data files no snapshot references any
   more. It does not delete them.

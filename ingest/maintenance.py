@@ -9,7 +9,8 @@ during the load (`ingest.bronze`); this module covers the rest:
 - **compaction:** PyIceberg 0.12 has no `rewrite_data_files`, so a fragmented arrival day is
   rewritten in one overwrite. The stream sink leaves such days (a file per commit); `fragment`
   produces one on purpose. The Airflow DAG `iceberg_maintenance` compacts on a schedule;
-- **snapshot expiration:** metadata only. PyIceberg deletes no files and Lakekeeper does not
+- **snapshot expiration:** metadata only, and never the commits that wait on a branch for
+  publishing. PyIceberg deletes no files and Lakekeeper does not
   either, so the files only expired snapshots used are reported, not removed.
 
 The decisions are pure functions of table metadata, unit tested without the stack.
@@ -27,6 +28,7 @@ import duckdb
 import pyarrow as pa
 import pyarrow.compute as pc
 from pyiceberg.table import Table
+from pyiceberg.table.refs import SnapshotRefType
 from pyiceberg.table.snapshots import Snapshot, ancestors_of
 from pyiceberg.table.update.snapshot import ManageSnapshots
 from pyiceberg.transforms import DayTransform, HourTransform
@@ -258,6 +260,20 @@ def snapshots_to_expire(
     return sorted(set(all_ids) - kept)
 
 
+def unpublished(branch_newest_first: Iterable[int], main: set[int]) -> list[int]:
+    """A branch's snapshots after the point where it leaves main's history.
+
+    The stream sink's commits wait on its branch until the day is published (ADR 0021). They are
+    not main's, so the newest-of-main rule would expire them and cut the branch off from main.
+    """
+    ahead = []
+    for snapshot_id in branch_newest_first:
+        if snapshot_id in main:
+            break
+        ahead.append(snapshot_id)
+    return ahead
+
+
 @dataclass(frozen=True)
 class Expiry:
     expired: list[int]
@@ -273,12 +289,14 @@ def _all_data_files(table: Table) -> dict[str, int]:
 
 
 def expire(table: Table, keep: int) -> Expiry:
-    ids = snapshots_to_expire(
-        (s.snapshot_id for s in table.snapshots()),
-        [s.snapshot_id for s in ancestors_of(table.current_snapshot(), table.metadata)],
-        {ref.snapshot_id for ref in table.refs().values()},
-        keep,
-    )
+    main = [s.snapshot_id for s in ancestors_of(table.current_snapshot(), table.metadata)]
+    protected = {ref.snapshot_id for ref in table.refs().values()}
+    for name, ref in table.refs().items():
+        if name != "main" and ref.snapshot_ref_type == SnapshotRefType.BRANCH:
+            head = table.snapshot_by_id(ref.snapshot_id)
+            ancestry = (s.snapshot_id for s in ancestors_of(head, table.metadata))
+            protected.update(unpublished(ancestry, set(main)))
+    ids = snapshots_to_expire((s.snapshot_id for s in table.snapshots()), main, protected, keep)
     if not ids:
         return Expiry([], 0, 0)
     before = _all_data_files(table)

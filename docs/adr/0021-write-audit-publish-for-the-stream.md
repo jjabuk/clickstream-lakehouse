@@ -53,6 +53,8 @@ enough to audit, and who publishes it.
   recreated topic (a deleted Kafka volume) no longer matches it. The sink and the publish step
   then stop with an error instead of skipping or re-reading data; the branch needs new offsets
   before the stream can go on.
-- **Expiry must keep a sink commit in the history of `stream`.** The sink finds its offsets by
-  walking back from the branch head. `expire --keep 20` keeps far more than the one compaction
-  commit that can sit on top of the last sink commit.
+- **Expiry keeps every commit waiting on `stream`.** Publishing needs main to be an ancestor of
+  the branch head, and the sink finds its offsets by walking back from it. A first version kept
+  only the newest snapshots of main and the ref heads: a scheduled `expire --keep 20` removed four
+  of a day's five sink commits before publishing, and the fast-forward failed. Expiry now keeps a
+  branch's snapshots after the point where it leaves main.

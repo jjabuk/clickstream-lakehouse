@@ -10,6 +10,7 @@ from ingest.maintenance import (
     fragmented_days,
     snapshot_before_later_days,
     snapshots_to_expire,
+    unpublished,
 )
 
 D1, D2, D3 = date(2026, 2, 1), date(2026, 2, 2), date(2026, 2, 3)
@@ -67,3 +68,9 @@ def test_expiry_keeps_the_newest_of_main_and_every_ref_head():
 def test_expiry_never_drops_the_current_snapshot():
     with pytest.raises(ValueError):
         snapshots_to_expire([1, 2], [2, 1], {2}, keep=0)
+
+
+def test_commits_waiting_on_a_branch_are_the_ones_after_it_leaves_main():
+    main = {1, 2, 3}
+    assert unpublished([7, 6, 5, 3, 2, 1], main) == [7, 6, 5]
+    assert unpublished([3, 2, 1], main) == []
