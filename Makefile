@@ -2,8 +2,8 @@
 
 .PHONY: help setup hooks lint format format-check test check clean \
 	up down ps logs storage-init reset psql-shop psql-platform catalog-init hosts-check bootstrap test-integration test-stream day dbt-deps dbt-debug dbt-build dbt-docs dbt-evaluate warehouse-shell lint-sql fix-sql \
-	libduckdb-install cdc-wait cdc-status cdc-changes stream-up stream-down stream-day airflow-up airflow-down airflow-check airflow-backfill airflow-day marts-publish freshness alerts evidence-install evidence-dev evidence-validate iceberg-snapshots iceberg-files iceberg-partition iceberg-time-travel iceberg-fragment iceberg-compact iceberg-expire \
-	ci-days ci-replay ci-stream-replay marts-compare ci-dags ci-evidence ci-verify-incremental ci-state ci-mode ci-slim ci-contracts ci-logs
+	libduckdb-install cdc-wait cdc-status cdc-changes stream-up stream-down stream-day airflow-up airflow-down airflow-check airflow-backfill airflow-day marts-publish metrics-check freshness alerts evidence-install evidence-dev evidence-validate iceberg-snapshots iceberg-files iceberg-partition iceberg-time-travel iceberg-fragment iceberg-compact iceberg-expire \
+	ci-days ci-replay ci-stream-replay marts-compare ci-dags ci-evidence ci-metrics ci-verify-incremental ci-state ci-mode ci-slim ci-contracts ci-logs
 
 -include .env
 export
@@ -238,6 +238,9 @@ libduckdb-install: ## Install the pinned libduckdb (DuckDB 2.0.0) that dbt v2 us
 marts-publish: .env ## Copy the marts from the DuckDB warehouse to Postgres analytics.marts, which Evidence reads
 	SIMULATED_NOW=$$(cat $(SIM_CLOCK) 2>/dev/null) uv run python -m serving
 
+metrics-check: .env ## Check that Evidence's metrics equal dbt's, day by day, on the warehouse and its published copy (ADR 0023)
+	uv run python ci/check_metrics.py
+
 evidence-install: ## Install the pinned Evidence CLI (checksum-verified) into ~/.local/bin
 	evidence/install_cli.sh
 
@@ -318,6 +321,9 @@ ci-evidence: .env ## CI: after ci-replay, publish the CI marts to Postgres and v
 	$(CI_WAREHOUSE) $(MAKE) --no-print-directory marts-publish SIM_CLOCK=$(SIM_CLOCK)
 	evidence/install_cli.sh
 	$(MAKE) --no-print-directory evidence-validate
+
+ci-metrics: .env ## CI: after ci-evidence, check that Evidence's metrics equal dbt's on the CI marts
+	$(CI_WAREHOUSE) $(MAKE) --no-print-directory metrics-check
 
 ci-state: ## CI: collect the production state (manifest and warehouse) that pull requests defer to
 	rm -rf $(CI_STATE) && mkdir -p $(CI_STATE)

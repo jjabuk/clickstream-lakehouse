@@ -116,6 +116,9 @@ jobs:
       - name: Evidence pages validate against the CI marts
         if: steps.mode.outputs.mode == 'full'
         run: make ci-evidence
+      - name: Evidence's metrics equal dbt's on the CI marts
+        if: steps.mode.outputs.mode == 'full'
+        run: make ci-metrics
 
       - name: Collect the production state
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'

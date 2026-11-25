@@ -61,6 +61,14 @@ YAML restates the same ratios over the same marts.
 > needs dbt-core 1.x in an environment of its own next to dbt v2, and v2's `dbt sl` needs a dbt
 > platform account. The semantic models and metrics stay in the YAML as the definitions; dbt v2
 > parses them but validates them only with a platform account.
+>
+> **Update (2026-11-25):** the comparison is back without MetricFlow. `ci/check_metrics.py`
+> compiles each dbt metric from the YAML to daily SQL on the DuckDB warehouse (a simple metric is
+> its aggregation by the UTC date of the model's `agg_time_dimension`, a ratio is a ratio of two
+> of them per day) and each Evidence metric to daily SQL on the Postgres copy, as Evidence runs
+> it. Every Evidence metric must have a dbt metric of the same name, and the two must agree on
+> every day (`make metrics-check`; `make ci-metrics` in CI after `ci-evidence`). It supports what
+> the project uses: simple and ratio metrics, and a filter on a dimension of the same model.
 
 ## Alternatives considered
 

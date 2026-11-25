@@ -59,7 +59,7 @@ their window is still open and they can still convert.
 {% /row %}
 
 {% bar_chart
-  metric="visitor_conversion_7d"
+  metric="visitor_product_to_checkout_7d"
   x="product_week"
   where="is_window_complete"
   y_fmt="pct0"

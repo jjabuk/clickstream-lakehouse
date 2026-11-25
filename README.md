@@ -2,11 +2,61 @@
 
 [![CI](https://github.com/jjabuk/clickstream-lakehouse/actions/workflows/ci.yml/badge.svg)](https://github.com/jjabuk/clickstream-lakehouse/actions/workflows/ci.yml)
 
-A local lakehouse on the synthetic clickstream of a web shop. The generator simulates days of
-traffic, orders and the dirt of real data: late events, duplicates, bots and schema changes. The
-days are loaded into Iceberg through write-audit-publish, modelled with dbt into a Kimball star,
-orchestrated by Airflow and shown in Evidence. All data is synthetic, and the generator is
-deterministic (`--seed`).
+A lakehouse that runs on a laptop, built on the synthetic clickstream and orders of a web shop.
+A deterministic generator plays one day at a time, with the dirt of real data: late events,
+duplicates, bots, skewed clocks, a schema change, devices that log in halfway through a visit.
+The days reach Iceberg three ways (files, a Kafka stream, CDC from Postgres), are modelled by dbt
+into a Kimball star with a semantic layer, run in Airflow, and end on an Evidence dashboard.
+
+It is an analytics engineering project on a data engineering base. The base is tested, not
+only drawn: every guarantee below is checked by a test or a CI step, and many of them break the
+pipeline on purpose. Every choice has an ADR with the alternatives it rejected.
+
+## What it shows
+
+**Analytics engineering**
+
+- **A Kimball star with the hard parts.** Sessions are built in SQL, incrementally, with a
+  lookback window for late events (ADR 0004). `dim_user` is SCD2. `fct_orders` is an
+  accumulating snapshot built from a change log, with a timestamp per milestone that the source
+  table has already overwritten (ADR 0007).
+- **Identity stitching.** A cookie that one user logs in on is that user's device,
+  retroactively. A shared computer is left unknown rather than guessed. Retention counts people,
+  not cookies (ADR 0022).
+- **A semantic layer** in dbt, next to the marts. Evidence restates the metrics it shows, and CI
+  checks day by day that both give the same numbers (`make ci-metrics`, ADR 0023).
+- **Contracts and versions.** Every mart has an enforced contract. A breaking change is a new
+  model version with a deprecation date, and CI fails a pull request that breaks a contract
+  without one (ADR 0025).
+- **Tests at three levels:** unit tests for the tricky SQL (session gaps, late events, the SCD2
+  join, the funnel, milestones, stitching), data tests on every mart, and an incremental build
+  that must equal a full refresh.
+
+**Data engineering**
+
+- **Iceberg with a REST catalog** (Lakekeeper on Garage S3). PyIceberg writes and DuckDB reads
+  (ADR 0001 to 0003). [Schema and partition evolution, time travel, compaction and snapshot
+  expiration](docs/iceberg-operations.md) were run on the real table, each with a query before
+  and after.
+- **Write-audit-publish on Iceberg branches.** A day is written to a branch and audited, and
+  only then is `main` fast-forwarded. A broken delivery stays on its branch (ADR 0008).
+- **A Kafka stream with exactly-once into Iceberg.** A small sink of its own commits the Kafka
+  offsets in the Iceberg snapshot, with Avro and the Schema Registry. Failure tests kill the
+  sink, race two of them and run maintenance mid-window, and nothing is lost or written twice
+  (ADR 0005, 0006, 0021). The marts built from the stream equal those built from files.
+- **CDC with Debezium.** The shop's orders come from Postgres's WAL as a change log. A watermark
+  ends each day, so dbt never builds on a half-captured one. A test replays the log and gets the
+  shop's rows back (ADR 0007).
+
+**Operations**
+
+- **Airflow** replays simulated days as backfills, with Cosmos running dbt (ADR 0017).
+- **An SLA on two clocks:** the marts' freshness against the simulated clock, and a run's
+  deadline against the wall clock. Alerts land in one table, which the dashboard shows
+  (ADR 0026).
+- **CI** runs the whole stack in GitHub Actions. A pull request gets a slim build of what it
+  changed, deferred to `main`, or a full replay of four days across the schema change
+  (ADR 0015).
 
 ## Architecture
 
@@ -19,56 +69,21 @@ flowchart LR
   cdc -->|cdc-sink, PyIceberg<br/>change log| bronze
   s3 -->|PyIceberg<br/>write-audit-publish| bronze[(Iceberg bronze<br/>Lakekeeper REST)]
   kafka -->|stream sink, PyIceberg<br/>branch stream, audit| bronze
-  bronze -->|DuckDB iceberg| dbt[dbt-duckdb<br/>staging → marts]
-  shop --> dbt
+  bronze -->|DuckDB iceberg| dbt[dbt v2, DuckDB<br/>staging → marts]
+  shop -->|users, products| dbt
   dbt --> wh[(warehouse.duckdb)]
   wh -->|make marts-publish| pg[(Postgres<br/>analytics.marts)]
   pg --> ev[Evidence]
   af[Airflow + Cosmos] -.runs.-> gen & bronze & dbt & pg
 ```
 
-- **Bronze** holds the Iceberg tables: the clickstream (`bronze.clickstream_events`, partitioned
-  by `day(server_ts)`) and the shop's change log (`bronze.shop_changes`). PyIceberg writes them
-  and DuckDB reads them (ADR 0003, 0013).
-- **Write-audit-publish.** Each arrival day is written to a branch `wap_YYYYMMDD` and audited:
-  volume, duplicate deliveries, unknown event types and missing URLs. Only then is `main`
-  fast-forwarded. A faulty batch stays on its branch and nothing downstream sees it (ADR 0008).
-- **Kafka.** The same events can arrive as a stream instead (`make stream-up`): the generator
-  produces Avro to Kafka with the Schema Registry, and a small sink appends them with PyIceberg to
-  the branch `stream`, the Kafka offsets in each snapshot. A day is audited once the sink has
-  committed the whole topic, then `main` is fast-forwarded (ADR 0005, 0006, 0021). dbt does not
-  change: the marts built from the stream equal those built from files (`make marts-compare`).
-  Airflow compacts the sink's small files on a schedule (ADR 0016).
-- **CDC.** The shop's orders come from Postgres's WAL: Debezium writes every insert and status
-  update to one Kafka topic, and a sink appends it to bronze as a change log, offsets in the
-  Iceberg snapshot. A day ends with a watermark row that must reach bronze, so dbt never builds
-  on a half-captured day. `fct_orders` is an accumulating snapshot with a timestamp per
-  milestone, which the source table has already overwritten (ADR 0007).
-- **dbt v2** builds staging, intermediate and marts in a DuckDB file (ADR 0024). Incremental models merge with
-  a lookback window for late events (ADR 0004). `dim_user` is SCD2 from a snapshot. Tests use
-  dbt-utils and dbt-expectations, plus unit tests for the sessionization, the SCD2 join and the
-  funnel.
-- **Identity stitching.** A user has a cookie per device and often logs in only at the checkout.
-  A cookie that one user logs in on is theirs, retroactively; a shared computer is left unknown.
-  Sessions carry the identified user and a `person_id`, and retention counts people, not
-  cookies (ADR 0022).
-- **Airflow** replays simulated days with backfills. Cosmos runs one `dbt build` in watcher mode,
-  because DuckDB has a single writer (ADR 0017).
-- **Semantic layer** in dbt (MetricFlow spec): semantic models and metrics are defined next to
-  the marts (ADR 0023).
-- **Contracts.** Every mart has an enforced contract and is `public`; staging and intermediate
-  are not. A breaking change is a new model version (`fct_sessions` v2), and CI fails a pull
-  request that breaks a contract without one (`make ci-contracts`, ADR 0025).
-- **SLA on two clocks.** The marts' freshness is a dbt test against the simulated clock, checked
-  after every replayed day; a run past its deadline and a failed task raise alerts too, kept in
-  `ops.pipeline_alerts` and shown on the dashboard's Data health page (ADR 0026).
-- **Failure tests** break the stream on purpose (a killed sink, two sinks racing, maintenance
-  during a window) and check that no message is lost or written twice (`make test-stream`, ADR 0021).
-- **Evidence** reads a Postgres copy of the marts, swapped in one transaction after each build
+- **The clickstream** reaches `bronze.clickstream_events` one of two ways, as files
+  (`make day`, the default) or as a stream (`make stream-day`). dbt cannot tell which.
+- **The orders** always come through CDC into `bronze.shop_changes`. Users and products are read
+  from Postgres directly, with users snapshotted as SCD2 (ADR 0014).
+- **dbt v2** builds staging, intermediate and marts into one DuckDB file (ADR 0013, 0024).
+  Evidence reads a Postgres copy of the marts, swapped in one transaction after each build
   (ADR 0018).
-
-Week by week, Feast comes next. Stage 2 moves the same
-dbt project to Databricks.
 
 ## Data model
 
@@ -92,31 +107,19 @@ Requirements: Docker, [uv](https://docs.astral.sh/uv/), DuckDB 2.0.0 as a system
 the `/etc/hosts` entry `127.0.0.1 garage` (ADR 0012; `make hosts-check` tells you).
 
 ```bash
-make setup
-```
-```bash
-make bootstrap
-```
-```bash
-make day DATE=2026-01-10
-```
-```bash
+make setup                   # Python dependencies from uv.lock, git hooks
+make bootstrap               # the stack: storage, catalog, Postgres, Kafka, Debezium
+make day DATE=2026-01-10     # one simulated day: clickstream through WAP, orders through CDC
 make dbt-build
-```
-```bash
 make marts-publish
-```
-```bash
-make evidence-install
-```
-```bash
-make evidence-dev
+make evidence-install && make evidence-dev
 ```
 
 The dashboard is at http://localhost:3000. With Airflow (`make airflow-up`, UI at
 http://localhost:8088), days are replayed with `make airflow-backfill FROM=2026-02-01
 TO=2026-02-07`. A broken delivery is `make day DATE=... FAULT=truncated` (or `make airflow-day
-DAY=... FAULT=truncated`). `make help` lists every command.
+DAY=... FAULT=truncated`). Devices and logins in the middle of a visit start on 2026-03-01, so
+stitching shows from there on. `make help` lists every command.
 
 ### Through Kafka
 
@@ -136,113 +139,36 @@ Redpanda Console shows the topic, the decoded events and the schemas at http://l
 `rejected_YYYYMMDD` and resets the branch, and `main` does not change; the same command without
 `FAULT` is the redelivery. In Airflow: `make airflow-day DAY=... INGEST=stream`.
 
-## Iceberg operations
+## Limits, and the way to production
 
-Each operation was run on the dev table with real results. The queries are DuckDB with the
-catalog attached as `lk`. The full walkthrough, including the files read and the CLI output, is
-in [docs/iceberg-operations.md](docs/iceberg-operations.md). The design is in ADR 0016.
+This is a demo on one machine, and some choices only make sense there:
 
-### Schema evolution: `utm_campaign` appears on 2026-02-01
-
-The load adds the column with `union_by_name`. Older files are not rewritten and read it as NULL.
-
-```sql
-select cast(server_ts as date) as arrival_day, count(utm_campaign) as with_campaign
-from lk.bronze.clickstream_events
-where cast(server_ts as date) between '2026-01-31' and '2026-02-02'
-group by all order by all;
-```
-
-| arrival_day | before 2026-02-01 was loaded | after |
-|---|---|---|
-| 2026-01-31 | *(no such column)* | 0 |
-| 2026-02-01 | | 3264 |
-| 2026-02-02 | | 2451 |
-
-### Partition evolution: `day(server_ts)` → `hour(server_ts)`
-
-`make iceberg-partition GRAIN=hour` changes only metadata. Old files stay in spec 0, and the
-next day lands in spec 1 (`make iceberg-files`):
-
-| arrival_day | spec_id | files | records | avg KiB |
-|---|---|---|---|---|
-| 2026-02-06 | 0 (day) | 1 | 8053 | 308 |
-| 2026-02-07 | 1 (hour) | **24** | 8232 | **20** |
-
-```sql
-select count(*) from lk.bronze.clickstream_events
-where server_ts >= '2026-02-07 10:00' and server_ts < '2026-02-07 11:00';
-```
-
-DuckDB prunes on both specs: one file for the hour of 2026-02-07 and the whole-day file for
-2026-02-06. At ~8,000 rows a day, hourly files are too small, so bronze went back to `day`.
-
-### Time travel: a day before its late events arrived
-
-`make iceberg-time-travel DAY=2026-02-06` finds the snapshot after that day's load and before the
-next one:
-
-```sql
-select cast(server_ts as date) as arrival_day, count(*) as events
-from lk.bronze.clickstream_events at (version => 6993704786740758323)  -- drop AT for "now"
-where cast(event_ts as date) = '2026-02-06'
-group by all order by arrival_day;
-```
-
-| arrival_day | as of the snapshot | now |
-|---|---|---|
-| 2026-02-06 | 7870 | 7870 |
-| 2026-02-07 | | **124** (late) |
-
-### Compaction
-
-`make iceberg-fragment DAY=2026-02-05 PARTS=24` simulates a streaming sink's small files, and
-`make iceberg-compact` merges them: `24 -> 1 data files`. The rows are unchanged in both
-directions:
-
-```sql
-select count(*) from (
-  (select * from lk.bronze.clickstream_events
-   except all select * from lk.bronze.clickstream_events at (version => 2564140707840797718))
-  union all
-  (select * from lk.bronze.clickstream_events at (version => 2564140707840797718)
-   except all select * from lk.bronze.clickstream_events));
--- 0
-```
-
-### Snapshot expiration
-
-```sql
-select count(*) from iceberg_snapshots('lk.bronze.clickstream_events');  -- 42 before, 5 after
-```
-
-`make iceberg-expire KEEP=5` expired 37 snapshots. The time travel above now fails with
-`Could not find snapshot with id 6993704786740758323`. PyIceberg deletes no files: the 3
-unreferenced data files stay on S3.
-
-### Write-audit-publish
-
-```bash
-make day DATE=2026-02-11 FAULT=truncated
-```
-
-The audit fails: 1,914 rows against a median of 8,053 for the previous days, where the floor is
-50%. The batch
-stays on `wap_20260211`, and `main` and the marts do not change. Delivering the day again without
-the fault publishes it (`tests/integration/test_wap.py`).
+- **DuckDB has a single writer.** One `dbt build` runs at a time, and a retried dbt task in
+  Airflow needs the day run again (ADR 0017). A shared warehouse (Snowflake, BigQuery,
+  Databricks SQL) removes this. Because the models are plain SQL, it would mean a new adapter and
+  a few macros, not a rewrite.
+- **Single-node services.** There is one Kafka broker, one Connect worker, and Garage with one
+  node. Production would use managed Kafka and object storage. The exactly-once argument does not
+  change, because it rests on the Iceberg commit, not on the broker.
+- **Simulated time.** Freshness is measured against the generator's clock, which a real
+  pipeline would replace with the wall clock (ADR 0026).
+- **Secrets** come from a local `.env`. Production would use a secret manager, and Debezium
+  already reads its credentials from the environment, not from its configuration.
+- **Synthetic data.** It is generated with a seed and contains no real person. Stitching is
+  checked against the generator's truth, which a real shop does not have.
 
 ## Repository layout
 
 ```
 generator/      synthetic traffic, users, orders and faults
-ingest/         landing → bronze (write-audit-publish), Iceberg maintenance, DuckDB reader
+ingest/         files, stream and CDC into bronze; write-audit-publish; Iceberg maintenance
 dbt/            staging, intermediate, marts, snapshots, tests
-serving/        marts → Postgres for the dashboard
+serving/        marts → Postgres for the dashboard; freshness and alerts
 evidence/       Evidence pages and metrics
-airflow/dags/   the daily DAG (Cosmos)
-infra/          docker compose and service configuration
+airflow/dags/   the daily DAG (Cosmos) and the alert callbacks
+infra/          docker compose, Debezium connector, service configuration
 tests/          unit tests, and integration tests on the running stack
-ci/             CI helpers (slim or full, replay); workflow in .github/workflows/
+ci/             CI checks (contracts, metrics, DAG import, slim or full); workflow in .github/workflows/
 docs/adr/       architecture decision records
 ```
 
@@ -262,7 +188,7 @@ docs/adr/       architecture decision records
 | [0011](docs/adr/0011-separate-postgres-instances.md) | Separate Postgres instances for the shop and the platform |
 | [0012](docs/adr/0012-single-s3-endpoint.md) | One S3 endpoint for every client |
 | [0013](docs/adr/0013-marts-in-duckdb-file.md) | Marts in a DuckDB file, Iceberg for bronze |
-| [0014](docs/adr/0014-users-read-from-postgres-directly.md) | Users read from Postgres until CDC |
+| [0014](docs/adr/0014-users-read-from-postgres-directly.md) | Users read from Postgres directly (orders moved to CDC, ADR 0007) |
 | [0015](docs/adr/0015-ci-slim-builds-and-incremental-replay.md) | CI: slim builds and incremental replay |
 | [0016](docs/adr/0016-iceberg-table-maintenance-with-pyiceberg.md) | Iceberg maintenance with PyIceberg |
 | [0017](docs/adr/0017-airflow-with-cosmos-watcher-mode.md) | Airflow with Cosmos in watcher mode |

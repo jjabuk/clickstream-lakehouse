@@ -1,8 +1,9 @@
 version: 2
 
 # Metrics built from the simple metrics of the semantic models in _marts.yml (ADR 0023). Every
-# rate is a ratio of two sums, so it stays correct at any grain and filter; Evidence uses the same
-# formulas and an integration test compares the two.
+# rate is a ratio of two sums, so it stays correct at any grain and filter. Evidence restates the
+# metrics it shows under the same names, and `make metrics-check` (in CI: `make ci-metrics`)
+# compares the two day by day.
 metrics:
   - name: bounce_rate
     label: Bounce rate
