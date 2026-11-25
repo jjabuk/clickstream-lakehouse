@@ -11,6 +11,7 @@ from ci.check_metrics import (
     differences,
     evidence_metrics,
     evidence_sql,
+    verdict,
 )
 
 MARTS = {
@@ -136,6 +137,12 @@ def test_a_different_definition_is_reported_by_day(warehouse):
 
 def test_a_day_missing_on_one_side_is_a_difference():
     assert differences({"2026-03-01": 1.0}, {}) == ["2026-03-01: dbt 1.0, Evidence None"]
+
+
+def test_a_metric_with_no_data_on_either_side_is_reported_not_failed():
+    assert verdict({}, {}) == "no data"
+    assert verdict({"2026-03-01": 1.0}, {}) == "DIFFERENT"
+    assert verdict({"2026-03-01": 1.0}, {"2026-03-01": 1.0}) == "ok"
 
 
 def test_a_metric_defined_twice_in_evidence_is_an_error():

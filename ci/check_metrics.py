@@ -15,7 +15,8 @@ MetricFlow, whose CLI was removed (ADR 0024):
 
 It compares two definitions and two copies of the data at once: a publication that lost rows
 fails it too. Days where a metric is null or zero are left out on both sides (a ratio with no
-denominator, a day with no rows).
+denominator, a day with no rows). A metric with no day left on either side is reported as
+"no data" and does not fail: the four CI days are too early for an order to be returned.
 
 Usage: python ci/check_metrics.py   (DBT_DUCKDB_PATH picks the warehouse; PLATFORM_POSTGRES_*
 the serving database)
@@ -164,6 +165,14 @@ def differences(dbt: Daily, evidence: Daily) -> list[str]:
     return problems
 
 
+def verdict(dbt: Daily, evidence: Daily) -> str:
+    """ok, DIFFERENT, or "no data": a metric with no rows on either side (the CI days have no
+    order returns yet) is reported, not failed. One side empty is a difference."""
+    if not dbt and not evidence:
+        return "no data"
+    return "DIFFERENT" if differences(dbt, evidence) else "ok"
+
+
 def _dsn(env: Mapping[str, str]) -> str:
     return (
         f"host={env.get('PLATFORM_POSTGRES_HOST', 'localhost')} "
@@ -196,17 +205,17 @@ def main() -> None:
             ours = _clean(duck.sql(dbt_sql(dbt, name)).fetchall())
             theirs = _clean(pg.execute(evidence_sql(evidence, name)).fetchall())
             problems = differences(ours, theirs)
-            print(f"{name:<34} {len(ours):>5}  {'ok' if not problems else 'DIFFERENT'}")
+            print(f"{name:<34} {len(ours):>5}  {verdict(ours, theirs)}")
             for problem in problems[:5]:
                 print(f"    {problem}")
             if len(problems) > 5:
                 print(f"    ... and {len(problems) - 5} more days")
-            failed |= bool(problems) or not ours
+            failed |= bool(problems)
     only_dbt = sorted(dbt.keys() - evidence.keys())
     print(f"\ndbt metrics Evidence does not show (not compared): {', '.join(only_dbt)}")
     if failed:
-        sys.exit("Evidence's metrics differ from dbt's (or a metric has no data).")
-    print(f"\n{len(evidence)} Evidence metrics equal dbt's on every day.")
+        sys.exit("Evidence's metrics differ from dbt's.")
+    print(f"\n{len(evidence)} Evidence metrics equal dbt's on every day they have data.")
 
 
 if __name__ == "__main__":
