@@ -8,7 +8,8 @@ after each dbt build the marts are copied into the `analytics` database on postg
 - into a fresh schema `marts_new`, which then replaces `marts` in one transaction, so a reader
   sees the previous publication or the new one, never half of each;
 - readable by `analytics_reader` only (SELECT), the role the dashboard logs in with;
-- with `marts._published`: when, and the simulated clock the marts were built against.
+- with `marts._published`: when, and the simulated clock the marts were built against;
+- next to `ops.pipeline_alerts`, the pipeline's alerts (`serving.alerts`, ADR 0026).
 
 The database and the role are created on first use; every step is idempotent.
 """
@@ -128,4 +129,8 @@ def publish(
                 sql.Identifier(SCHEMA), sql.Identifier(READER)
             )
         )
+        # The Data health page reads the alerts next to the marts (ADR 0026).
+        from serving.alerts import ensure_alerts_table
+
+        ensure_alerts_table(conn)
     return Publication(counts)

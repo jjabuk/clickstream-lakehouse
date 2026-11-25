@@ -20,6 +20,7 @@ import numpy as np
 from generator.catalog import Catalog
 from generator.config import GeneratorConfig
 from generator.dirt import RawRow, apply_dirt
+from generator.identity import assign_identity
 from generator.orders import Order, order_id_for
 from generator.rng import stream
 from generator.sessions import CatalogSampler, simulate_bot_session, simulate_human_session
@@ -94,6 +95,13 @@ def simulate_day(
         start = midnight + timedelta(hours=float(hours[i]))
         country = str(visitor.attributes_on(day)["country"])
         session = simulate_human_session(rng, config, sampler, visitor, start, country)
+        if day >= config.identity_start and visitor.user_id is not None:
+            session = assign_identity(
+                stream(config.seed, "identity", day, i),
+                config,
+                pool.device_cookies[visitor.visitor_idx],
+                session,
+            )
         events += apply_dirt(rng, config, session)
         if session.order is not None:
             intents.append(session.order)

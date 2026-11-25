@@ -62,3 +62,25 @@ def test_publish_replaces_the_marts_and_is_read_only(env, database, tmp_path):
         assert tables == [("marts", "_published"), ("marts", "dim_y"), ("marts", "fct_x")]
         with pytest.raises(psycopg.errors.InsufficientPrivilege):
             conn.execute("create table marts.oops (id int)")
+
+
+def test_alerts_are_kept_next_to_the_marts_and_readable_by_the_dashboard(env, database, tmp_path):
+    """ADR 0026: the alerts table exists from the first publish, and alerts survive a publish."""
+    from datetime import date
+
+    from serving.alerts import raise_alert
+
+    warehouse = tmp_path / "warehouse.duckdb"
+    _warehouse(warehouse, rows=1)
+    publish(env, warehouse, None, database)
+    with _reader(env, database) as conn:
+        assert conn.execute("select count(*) from ops.pipeline_alerts").fetchone() == (0,)
+
+    raise_alert(env, "freshness", "fct_x", "behind", "warn", date(2026, 2, 3), database)
+    publish(env, warehouse, None, database)  # replaces the marts, not the alerts
+    with _reader(env, database) as conn:
+        assert conn.execute(
+            "select simulated_day, level, kind, subject from ops.pipeline_alerts"
+        ).fetchall() == [(date(2026, 2, 3), "warn", "freshness", "fct_x")]
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            conn.execute("delete from ops.pipeline_alerts")

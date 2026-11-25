@@ -92,6 +92,9 @@ jobs:
           path: data/ci/state
           run-id: ${{ steps.prod.outputs.run_id }}
           github-token: ${{ github.token }}
+      - name: No breaking change to a model contract
+        if: github.event_name == 'pull_request'
+        run: make ci-contracts
       - name: Choose slim or full
         id: mode
         run: |

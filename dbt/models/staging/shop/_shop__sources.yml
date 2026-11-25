@@ -2,7 +2,9 @@ version: 2
 
 sources:
   - name: shop
-    description: The shop's Postgres database, read directly until CDC lands in week 5.
+    description: >
+      The shop's Postgres database, read directly for its reference data and users. Orders do not
+      come from here but from the change log (`shop_cdc`), so their history is kept.
     database: shop
     schema: public
     tables:
@@ -12,3 +14,4 @@ sources:
         description: One row per product.
       - name: categories
         description: One row per product category.
+

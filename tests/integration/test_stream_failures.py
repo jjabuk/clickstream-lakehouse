@@ -10,7 +10,7 @@ specific point and then checks `assert_consistent`:
 3. main is an ancestor of `stream`, so publishing stays a fast-forward.
 
 Each test has its own topic and table, so the dev data and the running sink are not touched.
-Needs the stack with the stream profile (`make stream-up`); `make test-failures` runs them.
+Needs the stack with the stream profile (`make stream-up`); `make test-stream` runs them.
 """
 
 import contextlib
@@ -39,7 +39,7 @@ from ingest import stream
 from ingest.bronze import ensure_table
 from ingest.maintenance import StreamPending, compact, expire
 
-pytestmark = [pytest.mark.integration, pytest.mark.stream_failures]
+pytestmark = [pytest.mark.integration, pytest.mark.stream]
 
 ROOT = Path(__file__).resolve().parents[2]
 DAY = date(2026, 3, 2)

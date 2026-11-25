@@ -9,4 +9,4 @@ password: "${ANALYTICS_READER_PASSWORD}"
 database: analytics
 sslmode: disable # local only
 schema: marts
-schemas: ["marts"]
+schemas: ["marts", "ops"] # ops: the pipeline alerts (ADR 0026)

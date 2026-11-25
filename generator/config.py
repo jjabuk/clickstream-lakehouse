@@ -33,6 +33,12 @@ class GeneratorConfig:
     login_prob: float = 0.85  # a registered visitor is logged in during a given session
     long_pause_prob: float = 0.03  # a gap between two events exceeds the 30-minute session timeout
 
+    # Identity (ADR 0022): from this day on, a registered user has a cookie per device type, a few
+    # share a computer, and a login can come in the middle of a session.
+    identity_start: date = date(2026, 3, 1)
+    remembered_login_prob: float = 0.5  # a logged-in session is logged in from its first page
+    shared_device_share: float = 0.03  # registered users whose desktop is another user's
+
     # Bots: no cookie, no user_id, high request rate, a few hot products.
     bot_sessions_per_day: int = 30
     bot_events_per_session: int = 150
@@ -64,6 +70,8 @@ class GeneratorConfig:
             "plan_change_prob_premium",
             "login_prob",
             "long_pause_prob",
+            "remembered_login_prob",
+            "shared_device_share",
             "duplicate_rate",
             "late_rate",
             "skewed_session_rate",

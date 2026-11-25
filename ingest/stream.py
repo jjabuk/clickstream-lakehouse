@@ -64,12 +64,12 @@ OFFSETS = "kafka.offsets"  # snapshot summary: {partition: next offset to read}
 # --- offsets -------------------------------------------------------------------------------------
 
 
-def _consumer(env: Mapping[str, str]) -> Consumer:
+def _consumer(env: Mapping[str, str], group: str = "bronze-stream-sink") -> Consumer:
     return Consumer(
         {
             "bootstrap.servers": env.get("KAFKA_BOOTSTRAP_SERVERS", "127.0.0.1:9092"),
             # Offsets live in the table, not in Kafka: the group is never committed.
-            "group.id": "bronze-stream-sink",
+            "group.id": group,
             "enable.auto.commit": False,
             "auto.offset.reset": "earliest",
         }
@@ -95,13 +95,15 @@ def offsets_at(table: Table, snapshot: Snapshot) -> dict[int, int]:
     return {}
 
 
-def check_not_ahead(reached: dict[int, int], end: dict[int, int], topic: str = TOPIC) -> None:
-    """The branch cannot have read past the end of the topic, unless the topic was recreated."""
+def check_not_ahead(
+    reached: dict[int, int], end: dict[int, int], topic: str = TOPIC, reader: str = f"'{BRANCH}'"
+) -> None:
+    """The table cannot have read past the end of the topic, unless the topic was recreated."""
     ahead = {p: (o, end.get(p, 0)) for p, o in reached.items() if o > end.get(p, 0)}
     if ahead:
         raise RuntimeError(
-            f"'{BRANCH}' has read past the end of {topic} (partition: (branch, topic) {ahead}); "
-            "was the topic recreated? Its offsets no longer match the branch."
+            f"{reader} has read past the end of {topic} (partition: (table, topic) {ahead}); "
+            "was the topic recreated? Its offsets no longer match the table."
         )
 
 
@@ -137,17 +139,12 @@ def _to_arrow(messages, deserialize, topic: str) -> pa.Table:
     return data
 
 
-def sink_once(
-    table: Table, consumer: Consumer, deserialize, max_rows: int, topic: str = TOPIC
-) -> int:
-    """Append the next batch from the branch head's offsets. Returns the rows committed."""
-    table = table.refresh()
-    head = branch_head(table)
-    start = offsets_at(table, head)
-    end = end_offsets(consumer, topic)
-    check_not_ahead(start, end, topic)
+def read_batch(
+    consumer: Consumer, topic: str, start: dict[int, int], end: dict[int, int], max_rows: int
+) -> tuple[list, dict[int, int]]:
+    """Up to `max_rows` messages from `start`, and the offsets they reach (also for ingest.cdc)."""
     if all(start.get(p, 0) >= o for p, o in end.items()):
-        return 0
+        return [], dict(start)
     consumer.assign([TopicPartition(topic, p, start.get(p, 0)) for p in end])
     messages, reached = [], dict(start)
     while len(messages) < max_rows:
@@ -159,6 +156,19 @@ def sink_once(
                 raise RuntimeError(m.error())
             messages.append(m)
             reached[m.partition()] = m.offset() + 1
+    return messages, reached
+
+
+def sink_once(
+    table: Table, consumer: Consumer, deserialize, max_rows: int, topic: str = TOPIC
+) -> int:
+    """Append the next batch from the branch head's offsets. Returns the rows committed."""
+    table = table.refresh()
+    head = branch_head(table)
+    start = offsets_at(table, head)
+    end = end_offsets(consumer, topic)
+    check_not_ahead(start, end, topic)
+    messages, reached = read_batch(consumer, topic, start, end, max_rows)
     if not messages:
         return 0
     data = _to_arrow(messages, deserialize, topic)

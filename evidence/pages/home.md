@@ -22,5 +22,7 @@ January 12-30 was never loaded, hence the gap. The low points on January 9 and 3
 events: they arrived with the next day's file, but their own day's file is not in bronze.
 
 - [Funnel](/funnel): product, cart and checkout by device and campaign
-- [Retention](/retention): weekly cohorts by first visit
+- [Retention](/retention): weekly cohorts of people by first visit, and how sessions are identified
+- [Orders](/orders): the shop's orders and their lifecycle, from the change log (CDC)
 - [Traffic](/traffic): every event that reached bronze, human and bot
+- [Data health](/health): freshness of the marts and the pipeline's alerts

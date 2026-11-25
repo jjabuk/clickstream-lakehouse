@@ -33,27 +33,45 @@ vars:
       - shop.users
       - shop.products
       - shop.categories
+      # The change log has no gap to measure: a quiet shop sends no changes. The pipeline waits
+      # for a watermark instead (ADR 0007), and the marts' own freshness covers the rest.
+      - shop_cdc.changes
     fct_rejoining_of_upstream_concepts:
       # The closed funnel is its own model so that its ordering rule has a unit test, and
       # fct_sessions joins it back to the page views on purpose.
       - int_sessions__funnel_steps
+    fct_source_fanout:
+      # One change log carries several of the shop's tables (ADR 0007); each staging model reads
+      # one table out of it, as it would read one table of a source.
+      - shop_cdc.changes
     fct_model_fanout:
       # The atomic page-view fact feeds several daily and weekly rollups by design (Kimball:
       # aggregates are built on the atomic fact, not on staging). Evidence reads a Postgres copy
       # without dbt's logic, so these rollups cannot move into the BI tool.
       - fct_page_views
+      # The session fact feeds the daily funnel and the weekly retention by person (ADR 0022), and
+      # its own deprecated version 1 (ADR 0025), which is a rename, not a rollup.
+      - fct_sessions.v2
 
 models:
   clickstream:
+    +group: analytics
     staging:
       +materialized: view
+      +access: private
     intermediate:
       +materialized: view
+      +access: protected
     marts:
       +materialized: table
       # Marts are the project's interface: the semantic layer, the dashboard and later Feast read
       # them (exposures in models/marts/_exposures.yml).
       +access: public
+
+snapshots:
+  clickstream:
+    # A snapshot reads a private staging model, so it belongs to the same group.
+    +group: analytics
 
 # A violation of the project's conventions fails the build, as the 1.x evaluator failed `make check`.
 checks:

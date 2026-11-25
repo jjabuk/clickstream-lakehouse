@@ -61,3 +61,40 @@ metrics:
     type: ratio
     numerator: converted_viewer_days
     denominator: product_viewer_days
+
+  - name: return_rate
+    label: Return rate
+    description: Of the delivered orders, the share returned since. Recent orders can still be returned.
+    type: ratio
+    numerator: returned_orders
+    denominator: delivered_orders
+
+  - name: cancellation_rate
+    label: Cancellation rate
+    type: ratio
+    numerator: cancelled_orders
+    denominator: orders
+
+  - name: average_order_value
+    label: Average order value
+    description: Net revenue per paid order.
+    type: ratio
+    numerator: net_revenue
+    denominator: paid_orders
+
+  - name: orders_per_session
+    label: Orders per session
+    description: >
+      Orders over human sessions in the same period, across two facts: the shop's orders from
+      CDC and the clickstream's sessions, joined on time only.
+    type: ratio
+    numerator: orders
+    denominator: sessions
+
+  - name: identified_session_share
+    label: Identified sessions
+    description: >
+      Share of sessions with a known user, logged in or stitched from the cookie (ADR 0022).
+    type: ratio
+    numerator: identified_sessions
+    denominator: sessions

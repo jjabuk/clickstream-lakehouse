@@ -10,6 +10,8 @@ A run handles one arrival day D, the same work as `make day DATE=D` followed by 
      waits for the closed window, audits it and fast-forwards main (ADR 0021). It needs
      `make stream-up`.
    A failed audit fails this task, so dbt never runs on a day `main` does not have.
+   D's orders reach bronze through CDC (Debezium, ADR 0007); the task ends by waiting for a
+   watermark, so the change log holds every order change the generator made.
    `make airflow-day DAY=... FAULT=truncated` breaks the first delivery on purpose; clearing the
    failed task (a retry) is the source's corrected redelivery.
 2. `dbt`: one `dbt build` (Cosmos watcher mode, dbt v2 as a subprocess, ADR 0024), with a task
@@ -17,6 +19,12 @@ A run handles one arrival day D, the same work as `make day DATE=D` followed by 
    split into parallel dbt processes.
 3. `publish_marts`: `make marts-publish`, the marts copied to Postgres for Evidence (ADR 0018).
    It runs only after a passing build, so the dashboard never shows a failed day.
+4. `freshness`: the marts' SLA against the simulated clock (`make freshness`, ADR 0026). It runs
+   whatever happened before it, so a day that never reached the marts shows up as stale marts.
+
+Alerts (ADR 0026) go to `ops.pipeline_alerts`, which the dashboard's Data health page shows: a
+stale mart (from `freshness`), a failed task (`on_failure_callback`), and a run still not done
+`DEADLINE_MINUTES` after it was queued (a deadline alert).
 
 Simulated time: the shop's days are not today's days, so only two kinds of run do anything.
 Every run handles its logical date: a backfill run (`make airflow-backfill FROM=... TO=...`), or a
@@ -29,12 +37,12 @@ previous day in place.
 """
 
 import os
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from airflow.providers.standard.operators.bash import BashOperator
 from airflow.providers.standard.operators.python import ShortCircuitOperator
-from airflow.sdk import DAG, Param
+from airflow.sdk import DAG, DeadlineAlert, DeadlineReference, Param, SyncCallback
 from airflow.timetables.interval import CronDataIntervalTimetable
 from cosmos import (
     DbtTaskGroup,
@@ -45,6 +53,7 @@ from cosmos import (
     ProjectConfig,
     RenderConfig,
 )
+from pipeline_alerts import POSTGRES, task_failed
 
 PROJECT = Path(os.environ.get("PROJECT_DIR", "/opt/project"))
 PYTHON = os.environ.get("PROJECT_PYTHON", "/opt/project-venv/bin/python")
@@ -55,6 +64,8 @@ DAY = "{{ logical_date | ds }}"
 # The simulated clock after a day: its end, as `make day` sets it (data/simulated_now). The
 # published marts record it.
 SIMULATED_NOW = "{{ macros.ds_add(logical_date | ds, 1) }}T00:00:00+00:00"
+# A day takes about two minutes; a run still going after this many has a problem worth an alert.
+DEADLINE_MINUTES = 4
 
 
 def _is_replay(dag_run, params, **_) -> bool:
@@ -86,7 +97,14 @@ with DAG(
     start_date=datetime(2026, 1, 10, tzinfo=UTC),
     catchup=False,
     max_active_runs=1,
-    default_args={"depends_on_past": True, "retries": 0},
+    default_args={"depends_on_past": True, "retries": 0, "on_failure_callback": task_failed},
+    deadline=DeadlineAlert(
+        reference=DeadlineReference.DAGRUN_QUEUED_AT,
+        interval=timedelta(minutes=DEADLINE_MINUTES),
+        callback=SyncCallback(
+            "pipeline_alerts.deadline_missed", kwargs={"minutes": DEADLINE_MINUTES}
+        ),
+    ),
     params={
         "day": Param(
             None,
@@ -131,6 +149,8 @@ with DAG(
             "{% else %}"
             f"{PYTHON} -m ingest --date {DAY}; "
             "{% endif %}"
+            # The day's orders arrive through CDC: wait until the shop's change log has them.
+            f"{PYTHON} -m ingest.cdc wait; "
             f"{PYTHON} ci/advance_clock.py {DAY} data/simulated_now"
         ),
     )
@@ -166,16 +186,26 @@ with DAG(
         task_id="publish_marts",
         cwd=str(PROJECT),
         bash_command=f"{PYTHON} -m serving",
-        env={
-            "SIMULATED_NOW": SIMULATED_NOW,
-            "PLATFORM_POSTGRES_HOST": "postgres-platform",
-            "PLATFORM_POSTGRES_PORT": "5432",
-        },
+        env={"SIMULATED_NOW": SIMULATED_NOW, **POSTGRES},
         append_env=True,
         # As for the dbt tasks: load_day orders the days.
         depends_on_past=False,
     )
 
-    replays_only >> load_day >> dbt >> publish_marts
+    # The SLA check (ADR 0026), after every replayed day whatever happened before it. A scheduled
+    # run that replays_only skips skips this too: its wall-clock day has no data to be fresh for.
+    freshness = BashOperator(
+        task_id="freshness",
+        cwd=str(PROJECT),
+        bash_command=(
+            f"{PYTHON} -m serving.freshness --as-of {SIMULATED_NOW} --day {DAY} --dbt {DBT}"
+        ),
+        env=POSTGRES,
+        append_env=True,
+        trigger_rule="all_done",
+        depends_on_past=False,
+    )
+
+    replays_only >> load_day >> dbt >> publish_marts >> freshness
 
     dag.doc_md = __doc__

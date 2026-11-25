@@ -125,6 +125,7 @@ unit_tests:
   # ---- session aggregation ---------------------------------------------------------------------
   - name: fct_sessions__aggregates_a_session
     model: fct_sessions
+    versions: {include: [2]}  # v1 renames a column of v2
     given:
       - input: ref('fct_page_views')
         rows:
@@ -137,10 +138,12 @@ unit_tests:
         rows:
           - {session_id: s1, reached_product: true, reached_cart: true, reached_checkout: false}
           - {session_id: s2, reached_product: false, reached_cart: false, reached_checkout: false}
+      - input: ref('int_identity__cookie_to_user')
+        rows: []
     expect:
       rows:
-        - {session_id: s1, page_views: 3, is_bounce: false, entry_page_type: home, exit_page_type: cart, product_views: 1, reached_cart: true, reached_checkout: false, duration_seconds: 180, user_id: 5, utm_campaign: spring_sale}
-        - {session_id: s2, page_views: 1, is_bounce: true, entry_page_type: home, exit_page_type: home, product_views: 0, reached_cart: false, reached_checkout: false, duration_seconds: 0, user_id: null, utm_campaign: null}
+        - {session_id: s1, page_views: 3, is_bounce: false, entry_page_type: home, exit_page_type: cart, product_views: 1, reached_cart: true, reached_checkout: false, duration_seconds: 180, user_id: 5, campaign: spring_sale}
+        - {session_id: s2, page_views: 1, is_bounce: true, entry_page_type: home, exit_page_type: home, product_views: 0, reached_cart: false, reached_checkout: false, duration_seconds: 0, user_id: null, campaign: null}
 
   - name: fct_sessions__attributes_are_deterministic
     description: >
@@ -148,6 +151,7 @@ unit_tests:
       from the entry page view, and a visitor who logs in mid-session is attributed for the whole
       session (user_id and user_key of the first identified page view).
     model: fct_sessions
+    versions: {include: [2]}  # v1 renames a column of v2
     given:
       - input: ref('fct_page_views')
         rows:
@@ -157,9 +161,42 @@ unit_tests:
       - input: ref('int_sessions__funnel_steps')
         rows:
           - {session_id: s3, reached_product: true, reached_cart: true, reached_checkout: false}
+      - input: ref('int_identity__cookie_to_user')
+        rows: []
     expect:
       rows:
         - {session_id: s3, user_id: 7, user_key: k7_v1, device: desktop, country: PL}
+
+  - name: fct_sessions__identity_from_the_login_or_the_cookie
+    description: >
+      Identity stitching (ADR 0022). s1 logged in; s2 on the same cookie did not and is stitched
+      to its user; s3 is on a shared computer and stays unknown, s4 on a cookie nobody logged in
+      on. The person is the user when known, otherwise the cookie.
+    model: fct_sessions
+    versions: {include: [2]}  # v1 has no identity columns
+    given:
+      - input: ref('fct_page_views')
+        rows:
+          - {session_id: s1, cookie_id: laptop, user_id: 7, user_key: k7, page_number_in_session: 1, occurred_at: '2026-03-02 10:00:00+00', page_type: home}
+          - {session_id: s2, cookie_id: laptop, user_id: null, user_key: unknown, page_number_in_session: 1, occurred_at: '2026-03-01 10:00:00+00', page_type: home}
+          - {session_id: s3, cookie_id: family_pc, user_id: null, user_key: unknown, page_number_in_session: 1, occurred_at: '2026-03-01 11:00:00+00', page_type: home}
+          - {session_id: s4, cookie_id: stranger, user_id: null, user_key: unknown, page_number_in_session: 1, occurred_at: '2026-03-01 12:00:00+00', page_type: home}
+      - input: ref('int_sessions__funnel_steps')
+        rows:
+          - {session_id: s1, reached_product: false, reached_cart: false, reached_checkout: false}
+          - {session_id: s2, reached_product: false, reached_cart: false, reached_checkout: false}
+          - {session_id: s3, reached_product: false, reached_cart: false, reached_checkout: false}
+          - {session_id: s4, reached_product: false, reached_cart: false, reached_checkout: false}
+      - input: ref('int_identity__cookie_to_user')
+        rows:
+          - {cookie_id: laptop, user_id: 7, is_shared_device: false}
+          - {cookie_id: family_pc, user_id: null, is_shared_device: true}
+    expect:
+      rows:
+        - {session_id: s1, user_id: 7, identified_user_id: 7, identity_source: login, person_id: 'user:7'}
+        - {session_id: s2, user_id: null, identified_user_id: 7, identity_source: stitched, person_id: 'user:7'}
+        - {session_id: s3, user_id: null, identified_user_id: null, identity_source: shared_device, person_id: 'cookie:family_pc'}
+        - {session_id: s4, user_id: null, identified_user_id: null, identity_source: anonymous, person_id: 'cookie:stranger'}
 
   # ---- dim_user ---------------------------------------------------------------------------------
   - name: dim_user__versions_and_unknown_member
@@ -231,3 +268,46 @@ unit_tests:
       rows:
         - {date_key: 20260301, product_id: 1, category_id: 10, page_views: 3, sessions: 2, visitors: 2, add_to_carts: 1}
         - {date_key: 20260302, product_id: 2, category_id: 20, page_views: 0, sessions: 0, visitors: 0, add_to_carts: 1}
+
+  - name: fct_orders__milestones_and_history_from_the_snapshot
+    description: >
+      An order captured from its insert gets every milestone and a complete history. An order
+      that entered the log through the snapshot keeps its current status and the milestones
+      from then on; the earlier ones are unknown, and its flags still come from the status.
+    model: fct_orders
+    given:
+      - input: ref('stg_shop_cdc__order_changes')
+        rows:
+          - {order_id: 1, change_type: insert, status: created, user_id: 7, cookie_id: c1, total_cents: 2500, created_at: '2026-03-01 10:00:00+00', changed_at: '2026-03-01 10:00:00+00', lsn: 10, log_position: 10}
+          - {order_id: 1, change_type: update, status: paid, user_id: 7, cookie_id: c1, total_cents: 2500, created_at: '2026-03-01 10:00:00+00', changed_at: '2026-03-01 10:30:00+00', lsn: 11, log_position: 11}
+          - {order_id: 1, change_type: update, status: shipped, user_id: 7, cookie_id: c1, total_cents: 2500, created_at: '2026-03-01 10:00:00+00', changed_at: '2026-03-02 10:30:00+00', lsn: 12, log_position: 12}
+          - {order_id: 2, change_type: snapshot, status: shipped, user_id: null, cookie_id: c2, total_cents: 1000, created_at: '2026-02-20 09:00:00+00', changed_at: '2026-02-22 09:00:00+00', lsn: 1, log_position: 1}
+          - {order_id: 2, change_type: update, status: delivered, user_id: null, cookie_id: c2, total_cents: 1000, created_at: '2026-02-20 09:00:00+00', changed_at: '2026-03-01 09:00:00+00', lsn: 13, log_position: 13}
+      - input: ref('stg_shop_cdc__order_items')
+        rows:
+          - {order_id: 1, line_no: 1, quantity: 2, line_total_cents: 2500}
+          - {order_id: 2, line_no: 1, quantity: 1, line_total_cents: 1000}
+      - input: ref('dim_user')
+        rows:
+          - {user_key: u7, user_id: 7, effective_from: '1900-01-01 00:00:00+00', effective_to: '9999-12-31 00:00:00+00'}
+    expect:
+      rows:
+        - {order_id: 1, user_key: u7, status: shipped, paid_at: '2026-03-01 10:30:00+00', shipped_at: '2026-03-02 10:30:00+00', delivered_at: null, is_paid: true, is_delivered: false, is_history_complete: true, status_changes: 2, units: 2, order_total: 25.00, net_revenue: 25.00, hours_paid_to_shipped: 24.0, hours_created_to_delivered: null}
+        - {order_id: 2, user_key: ab623e1f8d51d01aeef17b147ac104c1, status: delivered, paid_at: null, shipped_at: '2026-02-22 09:00:00+00', delivered_at: '2026-03-01 09:00:00+00', is_paid: true, is_delivered: true, is_history_complete: false, status_changes: 1, units: 1, order_total: 10.00, net_revenue: 10.00, hours_paid_to_shipped: null, hours_created_to_delivered: 216.0}
+
+  # ---- retention -------------------------------------------------------------------------------
+  - name: fct_retention_weekly__a_person_on_a_new_device_is_retained
+    description: >
+      User 7 visits on the laptop in the week of 2026-03-02 and on the phone a week later: one
+      person, retained in week 1, not two visitors of whom one never came back (ADR 0022).
+    model: fct_retention_weekly
+    given:
+      - input: ref('fct_sessions')
+        rows:
+          - {person_id: 'user:7', session_started_at: '2026-03-02 10:00:00+00'}
+          - {person_id: 'user:7', session_started_at: '2026-03-10 10:00:00+00'}
+          - {person_id: 'cookie:x', session_started_at: '2026-03-03 10:00:00+00'}
+    expect:
+      rows:
+        - {cohort_week: '2026-03-02', activity_week: '2026-03-02', weeks_since_first_visit: 0, cohort_visitors: 2, active_visitors: 2}
+        - {cohort_week: '2026-03-02', activity_week: '2026-03-09', weeks_since_first_visit: 1, cohort_visitors: 2, active_visitors: 1}

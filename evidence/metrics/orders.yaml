@@ -1,0 +1,49 @@
+# The shop's orders from the change log (fct_orders, ADR 0007), dated by when they were placed.
+# The same definitions as the dbt metrics: counts and revenue from the current status, so they
+# hold for the orders whose history began with the CDC snapshot. The flags become 0/1 columns
+# here: Postgres cuts the column aliases Evidence derives from a metric's SQL at 63 characters,
+# and a longer `case when` expression then returns no value.
+base_sql: >
+  select cast(created_at as date) as order_day, status, net_revenue,
+         is_paid::int as paid, is_delivered::int as delivered, is_returned::int as returned,
+         is_cancelled::int as cancelled
+  from marts.fct_orders
+date: order_day
+default_date_grain: day
+dimensions:
+  status: status
+metrics:
+  orders:
+    sql: count(*)
+    fmt: num0
+    label: Orders
+  paid_orders:
+    sql: sum(paid)
+    fmt: num0
+    label: Paid orders
+  delivered_orders:
+    sql: sum(delivered)
+    fmt: num0
+  returned_orders:
+    sql: sum(returned)
+    fmt: num0
+  cancelled_orders:
+    sql: sum(cancelled)
+    fmt: num0
+  net_revenue:
+    sql: sum(net_revenue)
+    fmt: num0
+    label: Net revenue
+    description: Paid orders, less returns and cancellations
+  average_order_value:
+    sql: "{net_revenue} * 1.0 / nullif({paid_orders}, 0)"
+    fmt: num2
+    label: Average order value
+  return_rate:
+    sql: "{returned_orders} * 1.0 / nullif({delivered_orders}, 0)"
+    fmt: pct1
+    label: Return rate
+  cancellation_rate:
+    sql: "{cancelled_orders} * 1.0 / nullif({orders}, 0)"
+    fmt: pct1
+    label: Cancellation rate

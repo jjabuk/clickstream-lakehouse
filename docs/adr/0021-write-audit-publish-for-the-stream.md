@@ -67,7 +67,7 @@ enough to audit, and who publishes it.
 
 ## Failure tests
 
-`make test-failures` (`tests/integration/test_stream_failures.py`, on the stack with
+`make test-stream` (`tests/integration/test_stream_failures.py`, on the stack with
 `make stream-up`) breaks the stream at one point per test, each on its own topic and table, and
 checks one invariant: every message of the topic is on the branch head exactly once (by partition
 and offset), the head's offsets are the end of the topic, and main is an ancestor of the branch.

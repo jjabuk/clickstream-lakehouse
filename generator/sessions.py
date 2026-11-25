@@ -84,6 +84,8 @@ class Session:
     user_agent: str
     events: tuple[TrueEvent, ...]
     order: OrderIntent | None = None
+    # Index of the first event that carries user_id: a login mid-session (generator/identity.py).
+    logged_in_from: int = 0
 
 
 def _round_ms(ts: datetime) -> datetime:

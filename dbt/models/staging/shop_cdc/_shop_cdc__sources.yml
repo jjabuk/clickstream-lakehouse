@@ -1,0 +1,25 @@
+version: 2
+
+sources:
+  - name: shop_cdc
+    description: >
+      The shop's change log (ADR 0007): Debezium reads Postgres's WAL, and cdc-sink appends every
+      change to bronze as it arrived. At least once, so a change can appear twice.
+    database: lk
+    schema: bronze
+    tables:
+      - name: changes
+        identifier: shop_changes
+        description: >
+          One row per delivery of a change to a row of `orders`, `order_items` or `cdc_watermark`
+          in any schema of the shop database (tests use their own). `op` is c, u, d, or r for the
+          rows read by the initial snapshot; `before` and `after` are the row images as JSON.
+          `kafka_offset` is the order in which Postgres committed the changes.
+        columns:
+          - name: kafka_offset
+            data_tests: [unique, not_null]
+          - name: op
+            data_tests:
+              - accepted_values:
+                  arguments:
+                    values: [c, u, d, r]

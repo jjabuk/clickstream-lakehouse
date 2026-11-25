@@ -1,0 +1,9 @@
+version: 2
+
+# One owning team for the whole project (ADR 0025). Access says who may ref a model: staging is
+# private to this group, intermediate is protected (this project only), and the marts are public,
+# the interface that the dashboard, the serving copy and later the feature store build on.
+groups:
+  - name: analytics
+    owner:
+      name: Analytics engineering

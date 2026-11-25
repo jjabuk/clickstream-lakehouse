@@ -15,6 +15,8 @@ flowchart LR
   gen[generator<br/>--seed] -->|JSONL per day| s3[(Garage S3<br/>landing)]
   gen -->|Avro events| kafka[(Kafka<br/>Schema Registry)]
   gen -->|orders, users| shop[(Postgres<br/>shop)]
+  shop -->|WAL, Debezium| cdc[(Kafka<br/>shop.changes)]
+  cdc -->|cdc-sink, PyIceberg<br/>change log| bronze
   s3 -->|PyIceberg<br/>write-audit-publish| bronze[(Iceberg bronze<br/>Lakekeeper REST)]
   kafka -->|stream sink, PyIceberg<br/>branch stream, audit| bronze
   bronze -->|DuckDB iceberg| dbt[dbt-duckdb<br/>staging → marts]
@@ -25,8 +27,9 @@ flowchart LR
   af[Airflow + Cosmos] -.runs.-> gen & bronze & dbt & pg
 ```
 
-- **Bronze** is the only Iceberg table (`bronze.clickstream_events`, partitioned by
-  `day(server_ts)`). PyIceberg writes it and DuckDB reads it (ADR 0003, 0013).
+- **Bronze** holds the Iceberg tables: the clickstream (`bronze.clickstream_events`, partitioned
+  by `day(server_ts)`) and the shop's change log (`bronze.shop_changes`). PyIceberg writes them
+  and DuckDB reads them (ADR 0003, 0013).
 - **Write-audit-publish.** Each arrival day is written to a branch `wap_YYYYMMDD` and audited:
   volume, duplicate deliveries, unknown event types and missing URLs. Only then is `main`
   fast-forwarded. A faulty batch stays on its branch and nothing downstream sees it (ADR 0008).
@@ -36,18 +39,35 @@ flowchart LR
   committed the whole topic, then `main` is fast-forwarded (ADR 0005, 0006, 0021). dbt does not
   change: the marts built from the stream equal those built from files (`make marts-compare`).
   Airflow compacts the sink's small files on a schedule (ADR 0016).
+- **CDC.** The shop's orders come from Postgres's WAL: Debezium writes every insert and status
+  update to one Kafka topic, and a sink appends it to bronze as a change log, offsets in the
+  Iceberg snapshot. A day ends with a watermark row that must reach bronze, so dbt never builds
+  on a half-captured day. `fct_orders` is an accumulating snapshot with a timestamp per
+  milestone, which the source table has already overwritten (ADR 0007).
 - **dbt v2** builds staging, intermediate and marts in a DuckDB file (ADR 0024). Incremental models merge with
   a lookback window for late events (ADR 0004). `dim_user` is SCD2 from a snapshot. Tests use
   dbt-utils and dbt-expectations, plus unit tests for the sessionization, the SCD2 join and the
   funnel.
+- **Identity stitching.** A user has a cookie per device and often logs in only at the checkout.
+  A cookie that one user logs in on is theirs, retroactively; a shared computer is left unknown.
+  Sessions carry the identified user and a `person_id`, and retention counts people, not
+  cookies (ADR 0022).
 - **Airflow** replays simulated days with backfills. Cosmos runs one `dbt build` in watcher mode,
   because DuckDB has a single writer (ADR 0017).
 - **Semantic layer** in dbt (MetricFlow spec): semantic models and metrics are defined next to
   the marts (ADR 0023).
+- **Contracts.** Every mart has an enforced contract and is `public`; staging and intermediate
+  are not. A breaking change is a new model version (`fct_sessions` v2), and CI fails a pull
+  request that breaks a contract without one (`make ci-contracts`, ADR 0025).
+- **SLA on two clocks.** The marts' freshness is a dbt test against the simulated clock, checked
+  after every replayed day; a run past its deadline and a failed task raise alerts too, kept in
+  `ops.pipeline_alerts` and shown on the dashboard's Data health page (ADR 0026).
+- **Failure tests** break the stream on purpose (a killed sink, two sinks racing, maintenance
+  during a window) and check that no message is lost or written twice (`make test-stream`, ADR 0021).
 - **Evidence** reads a Postgres copy of the marts, swapped in one transaction after each build
   (ADR 0018).
 
-Week by week, Debezium CDC and Feast come next. Stage 2 moves the same
+Week by week, Feast comes next. Stage 2 moves the same
 dbt project to Databricks.
 
 ## Data model
@@ -55,11 +75,13 @@ dbt project to Databricks.
 | Model | Grain |
 |---|---|
 | `fct_page_views` | one human page view (`event_id`); incremental merge with a lookback window |
-| `fct_sessions` | one session: a visitor's page views without a gap longer than the timeout |
+| `fct_sessions` | one session: a cookie's page views without a gap longer than the timeout, with the identified user and `person_id` |
 | `fct_funnel_daily` | day × device × campaign; counts of the ordered steps product → cart → checkout |
-| `fct_retention_weekly` | cohort week × activity week, cohorts by first visit |
+| `fct_retention_weekly` | cohort week × activity week; people (stitched users, or cookies) by first visit |
 | `fct_traffic_daily` | day × human/bot; what bot filtering removes |
 | `fct_visitor_conversion_daily` | visitor × day with a product view; checkout within 7 days in any session, with a flag for windows still open |
+| `fct_orders` | one order, an accumulating snapshot from the change log: current status, a timestamp per milestone, revenue |
+| `fct_order_status_changes` | one status an order entered, with the time spent in the one before |
 | `dim_user` | one version of a registered user (SCD2), plus an "unknown" member |
 | `dim_page`, `dim_date` | one page URL; one calendar day |
 
@@ -104,6 +126,10 @@ make stream-up
 ```bash
 make stream-day DATE=2026-01-11
 ```
+
+Kafka itself runs in the core stack, for CDC: `make cdc-status` shows the Debezium connector and
+its replication slot, `make cdc-changes` the latest changes in bronze. `make stream-up` adds the
+Schema Registry, the clickstream's sink and Console.
 
 Redpanda Console shows the topic, the decoded events and the schemas at http://localhost:8090.
 `make stream-day DATE=... FAULT=duplicated` delivers a broken day: the audit rejects it, tags it
@@ -230,6 +256,7 @@ docs/adr/       architecture decision records
 | [0004](docs/adr/0004-late-data-lookback-window.md) | Late data: a lookback window in dbt |
 | [0005](docs/adr/0005-kafka-ingest-without-touching-dbt.md) | Kafka ingest without touching dbt, with a sink of our own |
 | [0006](docs/adr/0006-avro-and-schema-registry.md) | Avro with the Schema Registry, BACKWARD compatibility |
+| [0007](docs/adr/0007-cdc-as-a-change-log-in-bronze.md) | The shop's orders through CDC, kept in bronze as a change log |
 | [0008](docs/adr/0008-write-audit-publish-on-iceberg-branches.md) | Write-audit-publish on Iceberg branches |
 | [0010](docs/adr/0010-object-storage-garage.md) | Object storage: Garage |
 | [0011](docs/adr/0011-separate-postgres-instances.md) | Separate Postgres instances for the shop and the platform |
@@ -242,5 +269,8 @@ docs/adr/       architecture decision records
 | [0018](docs/adr/0018-evidence-studio-on-a-postgres-serving-copy.md) | Evidence on a Postgres copy of the marts |
 | [0019](docs/adr/0019-stay-on-dbt-core-1-12-for-now.md) | Stay on dbt Core 1.12 until v2 runs elementary on DuckDB (superseded by 0024) |
 | [0021](docs/adr/0021-write-audit-publish-for-the-stream.md) | Write-audit-publish for the stream |
+| [0022](docs/adr/0022-identity-stitching.md) | Identity stitching: a cookie belongs to the one user who logs in on it |
 | [0023](docs/adr/0023-semantic-layer-in-dbt-with-metricflow.md) | The semantic layer in dbt (MetricFlow) |
 | [0024](docs/adr/0024-dbt-v2-without-elementary.md) | dbt v2, without elementary |
+| [0025](docs/adr/0025-contracts-on-the-marts.md) | Contracts on the marts, with versions and a CI check |
+| [0026](docs/adr/0026-sla-on-two-clocks.md) | An SLA on two clocks, and the alerts in one table |

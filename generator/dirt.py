@@ -60,7 +60,7 @@ def apply_dirt(rng: np.random.Generator, config: GeneratorConfig, session: Sessi
             "event_ts": _round_ms(ev.ts + timedelta(seconds=skew)),
             "server_ts": server_ts,
             "cookie_id": session.cookie_id,
-            "user_id": session.user_id,
+            "user_id": session.user_id if i >= session.logged_in_from else None,
             "country": session.country,
             "device": session.device,
             "user_agent": session.user_agent,

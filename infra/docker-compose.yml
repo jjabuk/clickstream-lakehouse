@@ -101,13 +101,13 @@ services:
       retries: 12
       start_period: 5s
 
-  # --- Streaming ingest (ADR 0005), only with `--profile stream` (make stream-up) -------------
-  # One Kafka broker in KRaft mode, the Schema Registry for the Avro events (ADR 0006), the sink
-  # that writes them to bronze, and Redpanda Console to look at topics and schemas. Containers use
-  # kafka:19092; the host (the generator, `make stream-day`) uses 127.0.0.1:9092.
+  # --- Kafka and CDC (ADR 0007), part of the core stack ------------------------------------------
+  # One Kafka broker in KRaft mode. The shop's orders always arrive through it: Debezium reads
+  # Postgres's WAL into `shop.changes`, and cdc-sink appends that change log to bronze. The click
+  # stream (below, profile `stream`) uses the same broker. Containers use kafka:19092; the host
+  # (the generator, `make stream-day`) uses 127.0.0.1:9092.
   kafka:
     image: apache/kafka:4.4.0
-    profiles: [stream]
     restart: unless-stopped
     environment:
       KAFKA_NODE_ID: 1
@@ -139,20 +139,103 @@ services:
       retries: 12
       start_period: 10s
 
-  # The event topic, created once with its partitions and kept forever: the stream is the replay
-  # log of the shop's clicks, as the landing files are.
+  # The topics, created once with their partitions and kept forever: each is a replay log, as the
+  # landing files are. `shop.changes` has one partition, so the change log keeps Postgres's commit
+  # order across tables (ADR 0007).
   kafka-init:
     image: apache/kafka:4.4.0
-    profiles: [stream]
     restart: "no"
     command:
       - sh
       - -c
-      - /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 --create --if-not-exists
+      - >-
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 --create --if-not-exists
         --topic clickstream.events --partitions 3 --replication-factor 1 --config retention.ms=-1
+        && /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 --create --if-not-exists
+        --topic shop.changes --partitions 1 --replication-factor 1 --config retention.ms=-1
     depends_on:
       kafka:
         condition: service_healthy
+
+  # Kafka Connect with Debezium's Postgres connector (ADR 0007). JSON without embedded schemas:
+  # the change log is read by one sink, which stores `before` and `after` as JSON text. The
+  # connector's credentials are read from this container's environment (`${env:...}`).
+  connect:
+    image: quay.io/debezium/connect:3.7.1.Final
+    restart: unless-stopped
+    environment:
+      BOOTSTRAP_SERVERS: kafka:19092
+      GROUP_ID: shop-cdc
+      CONFIG_STORAGE_TOPIC: connect.configs
+      OFFSET_STORAGE_TOPIC: connect.offsets
+      STATUS_STORAGE_TOPIC: connect.statuses
+      CONFIG_STORAGE_REPLICATION_FACTOR: 1
+      OFFSET_STORAGE_REPLICATION_FACTOR: 1
+      STATUS_STORAGE_REPLICATION_FACTOR: 1
+      KEY_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      CONNECT_KEY_CONVERTER_SCHEMAS_ENABLE: "false"
+      CONNECT_VALUE_CONVERTER_SCHEMAS_ENABLE: "false"
+      CONNECT_CONFIG_PROVIDERS: env
+      CONNECT_CONFIG_PROVIDERS_ENV_CLASS: org.apache.kafka.common.config.provider.EnvVarConfigProvider
+      SHOP_POSTGRES_USER: ${SHOP_POSTGRES_USER}
+      SHOP_POSTGRES_PASSWORD: ${SHOP_POSTGRES_PASSWORD}
+    ports:
+      - "127.0.0.1:8083:8083" # the Connect REST API (make cdc-status)
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:8083/"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 15s
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      postgres-shop:
+        condition: service_healthy
+
+  # Registers (or updates) the connector from infra/connect/shop-cdc.json. A PUT of the config is
+  # idempotent, and the connector resumes from its stored offsets in the WAL.
+  connect-init:
+    image: quay.io/debezium/connect:3.7.1.Final
+    restart: "no"
+    entrypoint: ["sh", "-c"]
+    command:
+      - >-
+        curl -fsS -X PUT -H 'Content-Type: application/json'
+        --data @/etc/connect/shop-cdc.json http://connect:8083/connectors/shop-cdc/config
+    volumes:
+      - ./connect/shop-cdc.json:/etc/connect/shop-cdc.json:ro
+    depends_on:
+      connect:
+        condition: service_healthy
+
+  # Appends the change log to bronze.shop_changes with PyIceberg (ingest/cdc.py), the Kafka
+  # offsets committed with the rows. The image is the stream sink's.
+  cdc-sink:
+    build:
+      context: ..
+      dockerfile: infra/stream-sink/Dockerfile
+    image: clickstream-lakehouse/stream-sink:latest
+    restart: unless-stopped
+    command: ["/opt/project-venv/bin/python", "-m", "ingest.cdc", "sink"]
+    env_file: ../.env
+    environment:
+      LAKEKEEPER_URL: http://lakekeeper:8181
+      KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ..:/opt/project:ro
+    depends_on:
+      # The connector registered first, also so that `up --wait` accepts connect-init's exit.
+      connect-init:
+        condition: service_completed_successfully
+      lakekeeper:
+        condition: service_healthy
+
+  # --- The click stream (ADR 0005), only with `--profile stream` (make stream-up) ---------------
+  # The Schema Registry for the Avro events (ADR 0006), the sink that writes them to bronze, and
+  # Redpanda Console to look at topics and schemas.
 
   schema-registry:
     image: confluentinc/cp-schema-registry:8.4.1
@@ -297,6 +380,9 @@ services:
         condition: service_healthy
       postgres-shop:
         condition: service_healthy
+      # load_day waits for the day's orders in the change log (ADR 0007).
+      cdc-sink:
+        condition: service_started
 
   airflow-scheduler:
     <<: *airflow

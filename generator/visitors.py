@@ -5,7 +5,7 @@ value on any day can be computed without replaying history. They are the raw mat
 """
 
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, timedelta
 
 import numpy as np
@@ -48,6 +48,8 @@ class Visitor:
 class VisitorPool:
     visitors: tuple[Visitor, ...]
     weights: np.ndarray  # relative activity (heavy-tailed), sums to 1
+    # visitor_idx -> {device: cookie_id} for registered visitors, from config.identity_start on
+    device_cookies: dict[int, dict[str, str]] = field(default_factory=dict)
 
 
 def build_visitor_pool(config: GeneratorConfig) -> VisitorPool:
@@ -74,7 +76,35 @@ def build_visitor_pool(config: GeneratorConfig) -> VisitorPool:
             Visitor(i, cookie_id, next_user_id, float(mobile_share[i]), country, plan, changes)
         )
         next_user_id += 1
-    return VisitorPool(tuple(visitors), weights)
+    # Its own stream, so the cookies above stay what they were before devices existed.
+    cookies = _device_cookies(config, visitors, stream(config.seed, "devices"))
+    return VisitorPool(tuple(visitors), weights, cookies)
+
+
+def _device_cookies(
+    config: GeneratorConfig, visitors: list[Visitor], rng: np.random.Generator
+) -> dict[int, dict[str, str]]:
+    """visitor_idx -> {device: cookie_id} for every registered visitor (ADR 0022).
+
+    The cookie of the pool is the one on the device the user uses most; the other device gets
+    a new one.
+    """
+    registered = [v for v in visitors if v.user_id is not None]
+    cookies: dict[int, dict[str, str]] = {}
+    for v in registered:
+        main = "mobile" if v.mobile_share >= 0.5 else "desktop"
+        other = "desktop" if main == "mobile" else "mobile"
+        new_cookie = str(uuid.UUID(bytes=rng.bytes(16), version=4))
+        cookies[v.visitor_idx] = {main: v.cookie_id, other: new_cookie}
+    # A shared computer: the user's desktop is someone else's desktop. The partner is drawn
+    # among the users who keep their own, so a cookie is shared by two users at most.
+    shares = rng.random(len(registered)) < config.shared_device_share
+    sharers = [v.visitor_idx for v, s in zip(registered, shares, strict=True) if s]
+    keepers = [v.visitor_idx for v, s in zip(registered, shares, strict=True) if not s]
+    for idx in sharers:
+        partner = keepers[int(rng.integers(len(keepers)))]
+        cookies[idx]["desktop"] = cookies[partner]["desktop"]
+    return cookies
 
 
 def _schedule_changes(

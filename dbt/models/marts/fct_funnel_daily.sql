@@ -7,7 +7,7 @@ with sessions as (
     select
         date_key,
         device,
-        coalesce(utm_campaign, '(none)') as utm_campaign,
+        coalesce(campaign, '(none)') as utm_campaign,
         is_bounce,
         reached_product,
         reached_cart,

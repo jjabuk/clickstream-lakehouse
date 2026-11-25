@@ -1,9 +1,9 @@
 .DEFAULT_GOAL := help
 
 .PHONY: help setup hooks lint format format-check test check clean \
-	up down ps logs storage-init reset psql-shop psql-platform catalog-init hosts-check bootstrap test-integration test-failures day dbt-deps dbt-debug dbt-build dbt-docs dbt-evaluate warehouse-shell lint-sql fix-sql \
-	libduckdb-install stream-up stream-down stream-day airflow-up airflow-down airflow-check airflow-backfill airflow-day marts-publish evidence-install evidence-dev evidence-validate iceberg-snapshots iceberg-files iceberg-partition iceberg-time-travel iceberg-fragment iceberg-compact iceberg-expire \
-	ci-days ci-replay ci-stream-replay marts-compare ci-dags ci-evidence ci-verify-incremental ci-state ci-mode ci-slim ci-logs
+	up down ps logs storage-init reset psql-shop psql-platform catalog-init hosts-check bootstrap test-integration test-stream day dbt-deps dbt-debug dbt-build dbt-docs dbt-evaluate warehouse-shell lint-sql fix-sql \
+	libduckdb-install cdc-wait cdc-status cdc-changes stream-up stream-down stream-day airflow-up airflow-down airflow-check airflow-backfill airflow-day marts-publish freshness alerts evidence-install evidence-dev evidence-validate iceberg-snapshots iceberg-files iceberg-partition iceberg-time-travel iceberg-fragment iceberg-compact iceberg-expire \
+	ci-days ci-replay ci-stream-replay marts-compare ci-dags ci-evidence ci-verify-incremental ci-state ci-mode ci-slim ci-contracts ci-logs
 
 -include .env
 export
@@ -13,7 +13,8 @@ COMPOSE := docker compose -f infra/docker-compose.yml --env-file .env
 # The simulated clock: the end of the latest arrival day `make day` has loaded. marts-publish
 # records it next to the marts, so the dashboard shows which simulated day it is.
 SIM_CLOCK ?= data/simulated_now
-DBT = uv run dbt
+# The simulated clock is dbt's "now" for the marts' freshness SLA (ADR 0026); no file, no check.
+DBT = SIMULATED_NOW=$$(cat $(SIM_CLOCK) 2>/dev/null) uv run dbt
 DBT_ARGS := --project-dir dbt --profiles-dir dbt
 # dbt v2 (ADR 0024): no usage statistics, and no warning that it skips validating the semantic
 # manifest, which it does only with a dbt platform account.
@@ -65,10 +66,10 @@ test: ## Run unit tests (no stack needed)
 	uv run pytest -m "not integration"
 
 test-integration: ## Run smoke tests against the running stack
-	uv run pytest -m "integration and not stream_failures"
+	uv run pytest -m "integration and not stream"
 
-test-failures: ## Break the stream on purpose (killed sink, races, maintenance, bad messages) and check nothing is lost or doubled; needs make stream-up
-	uv run pytest -m stream_failures
+test-stream: ## Stream tests on the stack (make stream-up): failures on purpose (killed sink, races, maintenance, bad messages) and the producer's schema contract
+	uv run pytest -m stream
 
 check: lint format-check test dbt-evaluate ## Run the stackless CI checks (lint, format, unit tests, dbt audit)
 
@@ -117,23 +118,39 @@ day: .env ## Generate one day and load it through write-audit-publish: make day 
 	@test -n "$(DATE)" || { echo "usage: make day DATE=YYYY-MM-DD [SEED=42] [FAULT=...]"; exit 1; }
 	uv run python -m generator --date $(DATE) --seed $(SEED) $(if $(FAULT),--fault $(FAULT))
 	uv run python -m ingest --date $(DATE)
+	uv run python -m ingest.cdc wait
 	@python3 ci/advance_clock.py $(DATE) $(SIM_CLOCK)
 
+# --- CDC: the shop's orders through Debezium (ADR 0007) ----------------------------------------
+# Part of `make up`: Kafka Connect with Debezium writes the WAL to `shop.changes`, and cdc-sink
+# appends it to bronze.shop_changes. `day` and `stream-day` end with cdc-wait.
+cdc-wait: .env ## CDC: write a watermark to the shop and wait until it, and every change before it, is in bronze
+	uv run python -m ingest.cdc wait
+
+cdc-status: ## CDC: the Debezium connector's state and its replication slot in Postgres
+	@curl -fsS http://localhost:8083/connectors/shop-cdc/status; echo
+	@$(COMPOSE) exec -T postgres-shop sh -c 'psql -U "$$POSTGRES_USER" -d shop -c "SELECT slot_name, active, confirmed_flush_lsn, pg_size_pretty(pg_current_wal_lsn() - confirmed_flush_lsn) AS lag FROM pg_replication_slots"'
+
+cdc-changes: .env ## CDC: the latest changes in bronze.shop_changes [N=20]
+	uv run python -m ingest.cdc latest --n $(or $(N),20)
+
 # --- Streaming ingest (ADR 0005, 0021) --------------------------------------------------------
-# A compose profile, like Airflow: `make up`, the tests and CI load files. The sink appends the
-# topic to the branch `stream` of bronze; `stream-day` audits the day there and fast-forwards main.
+# A compose profile, like Airflow: `make up`, the tests and CI load the clicks from files. Kafka
+# itself is in the core stack (CDC). The sink appends the topic to the branch `stream` of bronze;
+# `stream-day` audits the day there and fast-forwards main.
 STREAM = $(COMPOSE) --profile stream
 
-stream-up: .env ## Stream: start Kafka, Schema Registry, the bronze sink and Console (http://localhost:8090)
+stream-up: .env ## Stream: start Schema Registry, the bronze sink and Console (http://localhost:8090)
 	$(STREAM) up -d --build --wait
 
-stream-down: ## Stream: stop Kafka and the sink, keep the rest of the stack and the topic
-	$(STREAM) stop console stream-sink schema-registry kafka
+stream-down: ## Stream: stop the sink, Schema Registry and Console; Kafka stays for CDC
+	$(STREAM) stop console stream-sink schema-registry
 
 stream-day: .env ## Stream: send one day to Kafka, then audit and publish it from the sink's branch: make stream-day DATE=2026-01-10 [SEED=42] [FAULT=...]
 	@test -n "$(DATE)" || { echo "usage: make stream-day DATE=YYYY-MM-DD [SEED=42] [FAULT=...]"; exit 1; }
 	uv run python -m generator --stream --date $(DATE) --seed $(SEED) $(if $(FAULT),--fault $(FAULT))
 	uv run python -m ingest.stream publish --date $(DATE)
+	uv run python -m ingest.cdc wait
 	@python3 ci/advance_clock.py $(DATE) $(SIM_CLOCK)
 
 # --- Iceberg operations on bronze (ADR 0016) ---------------------------------------------------
@@ -224,6 +241,12 @@ marts-publish: .env ## Copy the marts from the DuckDB warehouse to Postgres anal
 evidence-install: ## Install the pinned Evidence CLI (checksum-verified) into ~/.local/bin
 	evidence/install_cli.sh
 
+freshness: .env ## Check the marts' freshness SLA against the simulated clock and record alerts (ADR 0026): make freshness [AS_OF=2026-02-22T00:00:00+00:00]
+	uv run python -m serving.freshness --as-of "$(or $(AS_OF),$(shell cat $(SIM_CLOCK) 2>/dev/null))"
+
+alerts: .env ## Show the latest pipeline alerts: stale marts, failed tasks, missed deadlines (ADR 0026)
+	$(COMPOSE) exec -T postgres-platform sh -c 'psql -U "$$POSTGRES_USER" -d analytics -c "select raised_at, simulated_day, level, kind, subject, left(detail, 90) as detail from ops.pipeline_alerts order by raised_at desc limit 20"'
+
 evidence-validate: ## Check the Evidence pages, metrics and their queries against the published marts
 	$(EVIDENCE) validate
 
@@ -267,6 +290,8 @@ ci-replay: .env dbt/dbt_packages ## CI: from an empty warehouse, load each CI da
 # `make marts-compare` must find every mart identical to the one ci-replay built from files.
 STREAM_DIR := data/stream
 
+# The stream replay keeps its own clock, so dbt's freshness SLA compares with that one.
+ci-stream-replay: SIM_CLOCK = $(STREAM_DIR)/simulated_now
 ci-stream-replay: .env dbt/dbt_packages ## CI: from an empty warehouse, stream each CI day (make stream-up) and dbt build after it
 	rm -rf $(STREAM_DIR) && mkdir -p $(STREAM_DIR)
 	@for d in $(CI_DATES); do \
@@ -305,6 +330,11 @@ ci-slim: .env dbt/dbt_packages ## CI: build state:modified+ only, deferring the 
 	mkdir -p $(CI_DIR) && rm -f $(CI_DIR)/pr.duckdb
 	DBT_DEFER_DUCKDB_PATH=$(CI_STATE)/warehouse.duckdb $(DBT) build $(DBT_ARGS) --target ci \
 		--select state:modified+ --defer --state $(abspath $(CI_STATE))
+
+ci-contracts: .env dbt/dbt_packages ## CI: fail on a breaking change to a model contract against the production manifest (ADR 0025)
+	@test -f $(CI_STATE)/manifest.json || { echo "no production manifest in $(CI_STATE): nothing to compare"; exit 0; }
+	$(DBT) parse $(DBT_ARGS)
+	uv run python ci/check_contracts.py $(CI_STATE)/manifest.json dbt/target/manifest.json
 
 ci-logs: .env ## CI: print the last lines of every service log (no follow, for failed runs)
 	$(COMPOSE) logs --no-color --tail=200

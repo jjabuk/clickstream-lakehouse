@@ -35,5 +35,5 @@ testpaths = ["tests"]
 pythonpath = ["."]
 markers = [
     "integration: needs the local stack running (make bootstrap)",
-    "stream_failures: breaks the stream on purpose; needs the stream profile (make stream-up)",
+    "stream: needs the stream profile on the stack (make stream-up)",
 ]

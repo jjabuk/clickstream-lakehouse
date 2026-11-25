@@ -18,6 +18,26 @@ models:
       - name: reached_checkout
         data_tests: [not_null]
 
+  - name: int_identity__cookie_to_user
+    description: >
+      Grain: one cookie that somebody logged in on (`cookie_id`). Identity stitching (ADR 0022):
+      the user the cookie belongs to, for all its page views, before the first login too. A
+      cookie that two or more users logged in on is a shared device and belongs to nobody
+      (`user_id` null). Cookies never logged in on are not here.
+    data_tests:
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "(user_id is null) = is_shared_device and (users_logged_in > 1) = is_shared_device"
+    columns:
+      - name: cookie_id
+        data_tests: [unique, not_null]
+      - name: user_id
+        description: The cookie's only user, or null for a shared device.
+      - name: is_shared_device
+        data_tests: [not_null]
+      - name: first_login_at
+        data_tests: [not_null]
+
 unit_tests:
   - name: int_sessions__funnel_steps__steps_must_be_in_order
     description: >
@@ -42,3 +62,23 @@ unit_tests:
         - {session_id: s1, reached_product: true, reached_cart: true, reached_checkout: true}
         - {session_id: s2, reached_product: false, reached_cart: false, reached_checkout: false}
         - {session_id: s3, reached_product: true, reached_cart: true, reached_checkout: false}
+
+  - name: int_identity__cookie_to_user__one_user_per_cookie_or_nobody
+    description: >
+      c1 is one user's device; c2 had two users log in, a shared device; c3 never logged in;
+      the bot's events are left out.
+    model: int_identity__cookie_to_user
+    given:
+      - input: ref('stg_clickstream__events')
+        rows:
+          - {cookie_id: c1, user_id: null, is_bot: false, occurred_at: '2026-03-01 09:00:00+00'}
+          - {cookie_id: c1, user_id: 7, is_bot: false, occurred_at: '2026-03-01 10:00:00+00'}
+          - {cookie_id: c1, user_id: 7, is_bot: false, occurred_at: '2026-03-03 10:00:00+00'}
+          - {cookie_id: c2, user_id: 7, is_bot: false, occurred_at: '2026-03-01 11:00:00+00'}
+          - {cookie_id: c2, user_id: 8, is_bot: false, occurred_at: '2026-03-02 11:00:00+00'}
+          - {cookie_id: c3, user_id: null, is_bot: false, occurred_at: '2026-03-01 12:00:00+00'}
+          - {cookie_id: c4, user_id: 9, is_bot: true, occurred_at: '2026-03-01 12:00:00+00'}
+    expect:
+      rows:
+        - {cookie_id: c1, user_id: 7, is_shared_device: false, users_logged_in: 1, first_login_at: '2026-03-01 10:00:00+00', last_login_at: '2026-03-03 10:00:00+00'}
+        - {cookie_id: c2, user_id: null, is_shared_device: true, users_logged_in: 2, first_login_at: '2026-03-01 11:00:00+00', last_login_at: '2026-03-02 11:00:00+00'}

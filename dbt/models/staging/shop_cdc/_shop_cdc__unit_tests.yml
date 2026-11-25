@@ -1,0 +1,20 @@
+version: 2
+
+unit_tests:
+  - name: stg_shop_cdc__order_changes__redelivery_and_schemas
+    description: >
+      A change Debezium delivered twice (same key, op and lsn) is kept once, at its first
+      delivery; a change from a test's schema and a change to another table are left out.
+    model: stg_shop_cdc__order_changes
+    given:
+      - input: source('shop_cdc', 'changes')
+        rows:
+          - {schema_name: public, table_name: orders, op: c, key: '{"order_id": 1}', lsn: 10, kafka_offset: 0, before: null, after: '{"order_id": 1, "status": "created", "updated_at": "2026-03-01T10:00:00Z"}'}
+          - {schema_name: public, table_name: orders, op: u, key: '{"order_id": 1}', lsn: 20, kafka_offset: 1, before: '{"order_id": 1, "status": "created"}', after: '{"order_id": 1, "status": "paid", "updated_at": "2026-03-01T10:20:00Z"}'}
+          - {schema_name: public, table_name: orders, op: u, key: '{"order_id": 1}', lsn: 20, kafka_offset: 2, before: '{"order_id": 1, "status": "created"}', after: '{"order_id": 1, "status": "paid", "updated_at": "2026-03-01T10:20:00Z"}'}
+          - {schema_name: test_ab12, table_name: orders, op: c, key: '{"order_id": 2}', lsn: 30, kafka_offset: 3, before: null, after: '{"order_id": 2, "status": "created", "updated_at": "2026-03-01T11:00:00Z"}'}
+          - {schema_name: public, table_name: cdc_watermark, op: c, key: '{"watermark_id": "x"}', lsn: 40, kafka_offset: 4, before: null, after: '{"watermark_id": "x"}'}
+    expect:
+      rows:
+        - {order_id: 1, change_type: insert, status: created, previous_status: null, log_position: 0, changed_at: '2026-03-01 10:00:00+00'}
+        - {order_id: 1, change_type: update, status: paid, previous_status: created, log_position: 1, changed_at: '2026-03-01 10:20:00+00'}

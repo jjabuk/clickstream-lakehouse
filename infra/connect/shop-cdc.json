@@ -1,0 +1,21 @@
+{
+  "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+  "tasks.max": "1",
+  "database.hostname": "postgres-shop",
+  "database.port": "5432",
+  "database.user": "${env:SHOP_POSTGRES_USER}",
+  "database.password": "${env:SHOP_POSTGRES_PASSWORD}",
+  "database.dbname": "shop",
+  "topic.prefix": "shop",
+  "plugin.name": "pgoutput",
+  "slot.name": "shop_cdc",
+  "publication.name": "shop_cdc",
+  "publication.autocreate.mode": "all_tables",
+  "table.include.list": "[^.]+\\.(orders|order_items|cdc_watermark)",
+  "snapshot.mode": "initial",
+  "tombstones.on.delete": "false",
+  "transforms": "route",
+  "transforms.route.type": "io.debezium.transforms.ByLogicalTableRouter",
+  "transforms.route.topic.regex": "shop\\..*",
+  "transforms.route.topic.replacement": "shop.changes"
+}

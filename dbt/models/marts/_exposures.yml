@@ -1,8 +1,32 @@
 version: 2
 
-# The Evidence pages (evidence/pages) and what they read. Evidence reads a Postgres copy of the
-# marts (ADR 0018), so these exposures end the lineage at the dashboard.
+# Who reads the marts (ADR 0025): the serving copy in Postgres, and the Evidence pages that read
+# it (ADR 0018). A change to a mart lists these in its lineage, and slim CI builds them.
 exposures:
+  - name: serving_postgres_copy
+    label: Serving copy in Postgres
+    type: application
+    maturity: high
+    description: >
+      `python -m serving` copies every fct_ and dim_ table to `analytics.marts` on
+      postgres-platform after each build, swapped in one transaction. Every mart's columns are
+      columns of a Postgres table that the dashboard queries.
+    depends_on:
+      - ref('dim_date')
+      - ref('dim_page')
+      - ref('dim_user')
+      - ref('fct_funnel_daily')
+      - ref('fct_order_status_changes')
+      - ref('fct_orders')
+      - ref('fct_page_views')
+      - ref('fct_product_views_daily')
+      - ref('fct_retention_weekly')
+      - ref('fct_sessions', v=2)
+      - ref('fct_traffic_daily')
+      - ref('fct_visitor_conversion_daily')
+    owner:
+      name: Analytics engineering
+
   - name: evidence_overview
     label: Dashboard overview
     type: dashboard
@@ -14,7 +38,7 @@ exposures:
       - ref('fct_traffic_daily')
       - ref('dim_date')
     owner:
-      name: clickstream-lakehouse
+      name: Analytics engineering
 
   - name: evidence_funnel
     label: Funnel
@@ -27,18 +51,19 @@ exposures:
       - ref('fct_visitor_conversion_daily')
       - ref('dim_date')
     owner:
-      name: clickstream-lakehouse
+      name: Analytics engineering
 
   - name: evidence_retention
     label: Retention
     type: dashboard
     maturity: medium
     url: http://localhost:3000/retention
-    description: Weekly cohorts by first visit.
+    description: Weekly cohorts of people by first visit, and how each session's person is known.
     depends_on:
       - ref('fct_retention_weekly')
+      - ref('fct_sessions', v=2)
     owner:
-      name: clickstream-lakehouse
+      name: Analytics engineering
 
   - name: evidence_traffic
     label: Traffic
@@ -50,4 +75,16 @@ exposures:
       - ref('fct_traffic_daily')
       - ref('dim_date')
     owner:
-      name: clickstream-lakehouse
+      name: Analytics engineering
+
+  - name: evidence_orders
+    label: Orders
+    type: dashboard
+    maturity: medium
+    url: http://localhost:3000/orders
+    description: Orders, revenue, returns and the order lifecycle, from the shop's change log.
+    depends_on:
+      - ref('fct_orders')
+      - ref('fct_order_status_changes')
+    owner:
+      name: Analytics engineering

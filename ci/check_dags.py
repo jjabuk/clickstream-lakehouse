@@ -6,9 +6,14 @@ services or metadata database.
 
 import sys
 
-from airflow.dag_processing.dagbag import DagBag
+DAGS = "/opt/project/airflow/dags"
+# Airflow's processes put the DAGs folder on sys.path, so a DAG can import a module next to it
+# (pipeline_alerts); a bare interpreter does not.
+sys.path.insert(0, DAGS)
 
-bag = DagBag("/opt/project/airflow/dags")
+from airflow.dag_processing.dagbag import DagBag  # noqa: E402
+
+bag = DagBag(DAGS)
 for path, error in bag.import_errors.items():
     print(f"{path}:\n{error}", file=sys.stderr)
 print(f"{len(bag.dags)} DAGs: {', '.join(sorted(bag.dags))}")
